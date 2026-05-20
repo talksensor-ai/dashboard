@@ -1,0 +1,40 @@
+# Virtual environments
+.venv/
+.venv312/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Dashboard node_modules and builds
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.env.local
+dashboard/.vercel/
+dashboard/dist/
+dashboard/build/
+
+# Audio and temporary test files in root
+*.ogg
+*.wav
+*.mp3
+*.txt
+*.json
+*.log
+!package.json
+!tsconfig.json
+!components.json
+!mcp_server/README.md
+!README.md
+!docs/**/*.md
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.gemini/
+.gitconfig
