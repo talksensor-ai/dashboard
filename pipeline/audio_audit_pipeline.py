@@ -15,24 +15,37 @@ os.environ["PATH"] = os.environ.get("PATH", "") + ":/opt/homebrew/bin"
 # HF_TOKEN для pyannote VAD внутри GigaAM longform
 os.environ["HF_TOKEN"] = os.environ.get("HF_TOKEN", "")
 
+# --- Кэш модели (загружается один раз на весь процесс) ---
+_gigaam_model = None
+_gigaam_device = None
+
+def _get_model():
+    """Возвращает уже загруженную модель GigaAM или загружает её первый раз."""
+    global _gigaam_model, _gigaam_device
+    if _gigaam_model is None:
+        import gigaam
+        import torch
+        _gigaam_device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"\n--- Загрузка GigaAM v3_e2e_rnnt (устройство: {_gigaam_device}) ---")
+        _gigaam_model = gigaam.load_model("v3_e2e_rnnt", device=_gigaam_device)
+        print("Модель загружена!")
+    return _gigaam_model
+
 def run_gigaam(audio_path, output_txt="audit_dialogues.txt"):
-    """Транскрипция через GigaAM v3 (RNNT) с word-level timestamps (без VAD, слепая нарезка с перекрытием)."""
+    """Транскрипция через GigaAM v3 (RNNT) с word-level timestamps.
+    Модель кэшируется в памяти и НЕ перезагружается между файлами.
+    Настройки нарезки: чанк 30с, шаг 24с (6с перекрытие) → ~150 вызовов на час аудио.
+    """
     if not os.path.exists(audio_path):
         print(f"Файл {audio_path} не найден.")
         return
 
-    import gigaam
     import torchaudio
     import tempfile
     import soundfile as sf
     import numpy as np
-    
-    print(f"\n--- Этап 1: Инициализация GigaAM v3_e2e_rnnt ---")
-    import torch
-    device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Используемое устройство: {device}")
-    model = gigaam.load_model("v3_e2e_rnnt", device=device)
-    print("Модель загружена!")
+
+    model = _get_model()
 
     start_time = time.time()
     print(f"\n--- Транскрипция: {audio_path} ---")
@@ -46,13 +59,15 @@ def run_gigaam(audio_path, output_txt="audit_dialogues.txt"):
     audio_np = waveform[0].numpy()
     total_duration = len(audio_np) / sr
     
-    # Настройки нарезки (слепая нарезка с перекрытием)
-    chunk_len_sec = 24.0
-    step_sec = 18.0
-    
+    # Настройки нарезки: чанк 30с, шаг 24с (6с перекрытие)
+    # Было: 24с/18с → ~200 вызовов на час. Стало: 30с/24с → ~150 вызовов (-25%)
+    chunk_len_sec = 30.0
+    step_sec = 24.0
+
     all_words = []
-    
-    print(f"Общая длительность: {total_duration:.1f} сек. Нарезка по {chunk_len_sec}с с шагом {step_sec}с.")
+
+    n_chunks = int(total_duration / step_sec) + 1
+    print(f"Длительность: {total_duration:.0f}с | Чанк: {chunk_len_sec}с | Шаг: {step_sec}с | Чанков: ~{n_chunks}")
     
     # Временный файл для чанков
     fd, tmp_path = tempfile.mkstemp(suffix=".wav")

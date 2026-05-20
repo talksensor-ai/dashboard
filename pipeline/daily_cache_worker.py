@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import json
+import queue
+import threading
 import requests
 import re
 import datetime
@@ -266,7 +268,11 @@ def run_cache_iterator(canvas_file, date_folder, shop_id, root_path="."):
         audio_buffer.clear()
 
 def process_daily_folder(y, root_path, date_folder, shop_id):
-    """Downloads all OGG files for a day, transcribes, merges with time-shifts, and invokes the iterator."""
+    """Downloads all OGG files for a day, transcribes, merges with time-shifts, and invokes the iterator.
+    
+    Optimization: uses a background download thread so the next file is fetched
+    while the GPU is busy transcribing the current one.
+    """
     target_path = f"{root_path}/{date_folder}"
     print(f"\n====== ОБРАБОТКА ДНЯ: {date_folder} ======")
     try:
@@ -284,48 +290,73 @@ def process_daily_folder(y, root_path, date_folder, shop_id):
           return
          
     combined_log = []
-    
-    for fname in oggs:
+
+    # --- Параллельная загрузка: качаем N+1 пока транскрибируем N ---
+    download_q = queue.Queue(maxsize=2)  # буфер до 2 файлов
+
+    def _downloader():
+        """Фоновый поток: скачивает файлы в очередь."""
+        for fname in oggs:
+            local_ogg = f"{date_folder}_{fname}"
+            try:
+                if not os.path.exists(local_ogg):
+                    print(f"[↓] Скачиваем {fname}...")
+                    y.download(f"{target_path}/{fname}", local_ogg)
+                    # Проверяем размер
+                    if os.path.exists(local_ogg) and os.path.getsize(local_ogg) < 1024:
+                        print(f"[!] Файл {local_ogg} поврежден. Пропускаем.")
+                        os.remove(local_ogg)
+                        download_q.put(None)  # сигнал пропуска
+                        continue
+                else:
+                    print(f"[↓] {fname} уже скачан.")
+                download_q.put(fname)
+            except Exception as e:
+                print(f"[ERROR] Сбой при скачивании {fname}: {e}")
+                download_q.put(None)  # сигнал ошибки
+        download_q.put("__DONE__")  # sentinel
+
+    downloader_thread = threading.Thread(target=_downloader, daemon=True)
+    downloader_thread.start()
+
+    while True:
+        item = download_q.get()
+        if item == "__DONE__":
+            break
+        if item is None:
+            continue  # пропускаем сломанный файл
+
+        fname = item
         local_ogg = f"{date_folder}_{fname}"
         local_txt = f"{date_folder}_{fname.replace('.ogg', '_transcript.txt')}"
-        
-        # Calculate Shift in Seconds: '14-30-00.ogg' -> 14*3600 + 30*60
+
         base = fname.replace('.ogg', '')
         try:
             shift_s = timestamp_to_seconds(base)
         except ValueError:
-            print(f"Неизвестный формат времени {fname}. Принимаю время сдвига 0.")
+            print(f"Неизвестный формат времени {fname}. Принимаю сдвиг 0.")
             shift_s = 0
-            
+
         try:
-            # Download
-            if not os.path.exists(local_ogg):
-                 print(f"Скачивание {fname}...")
-                 y.download(f"{target_path}/{fname}", local_ogg)
-                 
-            # Fix 0-byte file bug
-            if os.path.exists(local_ogg) and os.path.getsize(local_ogg) < 1024:
-                 print(f"[!] Файл {local_ogg} поврежден (весит слишком мало). Пропускаем.")
-                 os.remove(local_ogg)
-                 continue
-                 
-            # Transcribe
+            # Транскрибируем (модель уже загружена в памяти, повторная загрузка не происходит)
             if not os.path.exists(local_txt):
-                 print(f"Транскрибация {fname}...")
-                 run_gigaam(local_ogg, local_txt)
-                 
-            # Shift contents & append
+                print(f"[≈] Транскрибируем {fname}...")
+                run_gigaam(local_ogg, local_txt)
+
+            # Сдвиг временных меток и добавление в общий лог
             if os.path.exists(local_txt):
-                 with open(local_txt, 'r', encoding='utf-8') as f:
-                     raw_text = f.read()
-                 shifted_text = shift_timestamps_in_text(raw_text, shift_s)
-                 combined_log.append(f"\\n\\n=== ЧАНК: {fname} (Сдвиг: {shift_s} сек) ===\\n\\n")
-                 combined_log.append(shifted_text)
-                 
+                with open(local_txt, 'r', encoding='utf-8') as f:
+                    raw_text = f.read()
+                shifted_text = shift_timestamps_in_text(raw_text, shift_s)
+                combined_log.append(f"\n\n=== ЧАНК: {fname} (Сдвиг: {shift_s} сек) ===\n\n")
+                combined_log.append(shifted_text)
+
         except Exception as e:
-            print(f"[ERROR] Критический сбой при обработке файла {fname}: {e}. Пропускаем файл и идем дальше.")
+            print(f"[ERROR] Критический сбой при обработке {fname}: {e}. Пропускаем.")
             continue
-             
+
+    downloader_thread.join()
+
     with open(canvas_file, 'w', encoding='utf-8') as f:
          f.write("".join(combined_log))
          
@@ -335,6 +366,7 @@ def process_daily_folder(y, root_path, date_folder, shop_id):
     # run_cache_iterator(canvas_file, date_folder, shop_id, root_path="/Users/ai/talk")
     print("[!] DeepSeek итератор отключен по запросу пользователя (экономия баланса).")
     print("Pipeline successfully completed for the day!")
+
 
 if __name__ == "__main__":
     TOKEN = os.environ.get("YANDEX_TOKEN")
