@@ -3,6 +3,8 @@ import time
 import datetime
 import re
 import yadisk
+import warnings
+warnings.filterwarnings("ignore")
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
