@@ -119,12 +119,21 @@ def get_emotion_score(global_start, global_end, date_folder, root_path="/root/ta
         
         sf.write(tmp_path, audio_chunk[0].numpy(), sr)
         
+        # Очищаем кэш GPU перед инференсом чтобы избежать OOM на длинных сегментах
+        try:
+            import torch
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+
         # Get emotion (модель кэширована, не перезагружается)
         model = _get_emo_model()
         probs = model.get_probs(tmp_path)
         
         # Return both probs and the path to the cut audio (WAV)
         return probs, tmp_path
+
 
         
     except Exception as e:
