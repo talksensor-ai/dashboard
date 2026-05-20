@@ -1,8 +1,29 @@
 import os
 import glob
 import tempfile
+import warnings
 import soundfile as sf
 import torchaudio
+
+warnings.filterwarnings("ignore")
+
+# Добавляем Homebrew bin в PATH чтобы ffmpeg находился
+os.environ["PATH"] = os.environ.get("PATH", "") + ":/opt/homebrew/bin"
+
+# Кэш модели GigaAM-Emo (загружается один раз)
+_emo_model = None
+
+def _get_emo_model():
+    global _emo_model
+    if _emo_model is None:
+        import gigaam
+        import torch
+        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[EMO] Загрузка GigaAM-Emo (устройство: {device})...")
+        _emo_model = gigaam.load_model("emo", device=device)
+        print("[EMO] GigaAM-Emo загружена!")
+    return _emo_model
+
 
 def get_emotion_score(global_start, global_end, date_folder, root_path="/root/talk/test_compare"):
     """
@@ -13,6 +34,7 @@ def get_emotion_score(global_start, global_end, date_folder, root_path="/root/ta
     date_folder: "2026-04-27"
     root_path: path where the .ogg files are stored locally
     """
+
     import gigaam
     
     # 1. Find all local .ogg files for this date
@@ -97,15 +119,13 @@ def get_emotion_score(global_start, global_end, date_folder, root_path="/root/ta
         
         sf.write(tmp_path, audio_chunk[0].numpy(), sr)
         
-        # Get emotion
-        import gigaam
-        import torch
-        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        model = gigaam.load_model("emo", device=device)
+        # Get emotion (модель кэширована, не перезагружается)
+        model = _get_emo_model()
         probs = model.get_probs(tmp_path)
         
         # Return both probs and the path to the cut audio (WAV)
         return probs, tmp_path
+
         
     except Exception as e:
         print(f"[EMO] Ошибка: {e}")
