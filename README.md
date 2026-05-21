@@ -1,6 +1,7 @@
 # Talk Sensor
 
-**Talk Sensor** is an AI-driven, automated quality assurance pipeline for coffee shops. It analyzes audio recordings of barista-customer interactions, slices them into manageable clips, and scores them based on service standards.
+**Talk Sensor** is an AI-driven, automated quality assurance pipeline for coffee shops. It analyzes audio recordings of barista-customer interactions, slices them into manageable clips, and scores them based on service standards. (Updated: May 2026)
+
 
 ---
 
