@@ -27,6 +27,7 @@ dashboard/build/
 !package.json
 !tsconfig.json
 !components.json
+!vercel.json
 !mcp_server/README.md
 !README.md
 !docs/**/*.md
