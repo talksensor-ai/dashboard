@@ -1,19 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,900;1,900&display=swap');
+
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: #000000;
   --color-foreground: #ffffff;
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Plus Jakarta Sans', var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   
   --color-card: #1c1c1e;
   --color-card-foreground: #ffffff;
   
-  --color-border: rgba(255, 255, 255, 0.1);
-  --color-input: rgba(255, 255, 255, 0.05);
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-input: rgba(255, 255, 255, 0.04);
   
   --color-primary: #ffffff;
   --color-primary-foreground: #000000;
@@ -30,7 +33,6 @@
     @apply border-border outline-none;
   }
   body {
-    /* bg-background overrides our next-themes dynamic transition! We remove it, page.tsx handles theme bg! */
     font-feature-settings: "cv02", "cv03", "cv04", "ss01";
   }
 }
@@ -44,10 +46,67 @@
     background: transparent;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(150, 150, 150, 0.2);
+    background: rgba(150, 150, 150, 0.15);
     border-radius: 10px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(150, 150, 150, 0.4);
+    background: rgba(150, 150, 150, 0.35);
   }
 }
+
+/* Equalizer keyframe animations */
+@keyframes equalizer-slow {
+  0% { transform: scaleY(0.15); }
+  100% { transform: scaleY(0.85); }
+}
+@keyframes equalizer-mid {
+  0% { transform: scaleY(0.1); }
+  100% { transform: scaleY(1.0); }
+}
+@keyframes equalizer-fast {
+  0% { transform: scaleY(0.2); }
+  100% { transform: scaleY(0.7); }
+}
+
+.animate-eq-1 {
+  animation: equalizer-slow 0.6s ease-in-out infinite alternate;
+  transform-origin: bottom;
+}
+.animate-eq-2 {
+  animation: equalizer-mid 0.45s ease-in-out infinite alternate;
+  transform-origin: bottom;
+  animation-delay: 0.1s;
+}
+.animate-eq-3 {
+  animation: equalizer-fast 0.5s ease-in-out infinite alternate;
+  transform-origin: bottom;
+  animation-delay: 0.2s;
+}
+.animate-eq-4 {
+  animation: equalizer-slow 0.55s ease-in-out infinite alternate;
+  transform-origin: bottom;
+  animation-delay: 0.05s;
+}
+
+/* Glassmorphism overrides */
+.glass-card {
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  backdrop-filter: blur(20px);
+}
+.dark .glass-card {
+  background: rgba(15, 17, 23, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+}
+
+.glass-pill {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  backdrop-filter: blur(16px);
+}
+.dark .glass-pill {
+  background: rgba(24, 25, 30, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px);
+}

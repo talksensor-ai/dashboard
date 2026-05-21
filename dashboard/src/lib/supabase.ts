@@ -51,3 +51,12 @@ export type AppStatus = {
   status_message: string;
   last_run_at: string;
 };
+
+export type AgentTelemetry = {
+  id: number;
+  agent_name: string;
+  status: string;
+  active_task?: string;
+  created_at?: string;
+};
+

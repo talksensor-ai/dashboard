@@ -2,16 +2,13 @@
 // v1.0.2 - Restored Local Pipeline & Realtime
 
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { supabase, Shop, DialogScore, AppStatus } from "@/lib/supabase";
-import { Badge } from "@/components/ui/badge";
+import { supabase, Shop, DialogScore, AppStatus, AgentTelemetry } from "@/lib/supabase";
 import { 
-  Coffee, ShieldCheck, Clock, Volume2, PlayCircle, PauseCircle, 
-  CheckCircle2, ChevronLeft, ChevronDown, ChevronUp, AlertTriangle, 
-  TrendingUp, Loader2, BarChart3, Star, Calendar, SkipForward, 
-  SkipBack, Maximize2 
+  ShieldCheck, Clock, Volume2, PlayCircle, PauseCircle, 
+  ChevronLeft, AlertTriangle, TrendingUp, Star, Calendar 
 } from "lucide-react";
 import { 
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, 
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
   CartesianGrid 
 } from 'recharts';
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -19,7 +16,7 @@ import { useTheme } from "next-themes";
 
 // Global Styles for branding and scrollbars
 const fontImport = `
-  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,900;1,900&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
 `;
 
 // Helper: returns YYYY-MM-DD in LOCAL timezone (not UTC)
@@ -42,18 +39,25 @@ export default function Dashboard() {
   const [expandedDialogId, setExpandedDialogId] = useState<number | null>(null); 
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
   const [view, setView] = useState<string>("dashboard"); // 'dashboard', 'admin'
-  const [telemetry, setTelemetry] = useState<any[]>([]);
+  const [telemetry, setTelemetry] = useState<AgentTelemetry[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(getLocalDateStr());
   const [activeDialog, setActiveDialog] = useState<DialogScore | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-    const [activePhraseIndex, setActivePhraseIndex] = useState<number | null>(null);
+  const [activePhraseIndex, setActivePhraseIndex] = useState<number | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
   
+  const playTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingStartTimeRef = useRef<number | null>(null);
+  const mobileDateInputRef = useRef<HTMLInputElement | null>(null);
+  
   useEffect(() => {
     setIsMounted(true);
+    return () => {
+      if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current);
+    };
   }, []);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -61,9 +65,17 @@ export default function Dashboard() {
   // 1. Core Functions
   const togglePlay = () => {
     if (audioRef.current) {
-      if (isPlaying) audioRef.current.pause();
-      else audioRef.current.play().catch(() => {});
-      setIsPlaying(!isPlaying);
+      if (isPlaying) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      } else {
+        audioRef.current.play()
+          .then(() => setIsPlaying(true))
+          .catch((err) => {
+            console.warn("Playback failed:", err);
+            setIsPlaying(false);
+          });
+      }
     }
   };
 
@@ -79,33 +91,60 @@ export default function Dashboard() {
           break;
         }
       }
-      if (index !== -1 && index !== activePhraseIndex) {
-        setActivePhraseIndex(index);
+      if (index !== activePhraseIndex) {
+        setActivePhraseIndex(index === -1 ? null : index);
       }
     }
   };
 
   const handleLoadedMetadata = () => {
-    if (audioRef.current) setDuration(audioRef.current.duration);
+    if (audioRef.current) {
+      setDuration(audioRef.current.duration);
+      if (pendingStartTimeRef.current !== null) {
+        if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current);
+        audioRef.current.currentTime = pendingStartTimeRef.current;
+        audioRef.current.play()
+          .then(() => setIsPlaying(true))
+          .catch((err) => {
+            console.warn("Playback failed on load:", err);
+            setIsPlaying(false);
+          });
+        pendingStartTimeRef.current = null;
+      }
+    }
   };
 
   const playPhrase = (dialog: DialogScore, startTime: number) => {
     try {
+      if (playTimeoutRef.current) {
+        clearTimeout(playTimeoutRef.current);
+      }
       if (activeDialog?.id !== dialog.id) {
         setActiveDialog(dialog);
         setActivePhraseIndex(null);
-        const timer = setTimeout(() => {
-          if (audioRef.current) {
-            audioRef.current.currentTime = startTime;
-            audioRef.current.play().catch(() => {});
-            setIsPlaying(true);
+        pendingStartTimeRef.current = startTime;
+        // Fallback timeout in case onLoadedMetadata doesn't fire
+        playTimeoutRef.current = setTimeout(() => {
+          if (audioRef.current && dialog.audio_url && pendingStartTimeRef.current !== null) {
+            audioRef.current.currentTime = pendingStartTimeRef.current;
+            audioRef.current.play()
+              .then(() => setIsPlaying(true))
+              .catch((err) => {
+                console.warn("Playback fallback failed:", err);
+                setIsPlaying(false);
+              });
+            pendingStartTimeRef.current = null;
           }
-        }, 300);
-        return () => clearTimeout(timer);
-      } else if (audioRef.current) {
+        }, 800);
+      } else if (audioRef.current && dialog.audio_url) {
+        pendingStartTimeRef.current = null;
         audioRef.current.currentTime = startTime;
-        audioRef.current.play().catch(() => {});
-        setIsPlaying(true);
+        audioRef.current.play()
+          .then(() => setIsPlaying(true))
+          .catch((err) => {
+            console.warn("Playback failed:", err);
+            setIsPlaying(false);
+          });
       }
     } catch (e) {
       console.warn('playPhrase error:', e);
@@ -122,12 +161,14 @@ export default function Dashboard() {
   }, [activePhraseIndex]);
 
   const formatTime = (time: number) => {
+    if (typeof time !== 'number' || isNaN(time) || !isFinite(time)) return "0:00";
     const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
+    const secs = Math.floor(Math.abs(time % 60));
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const translateTag = (tag: string) => {
+    if (typeof tag !== 'string') return "";
     const map: Record<string, string> = {
       'cross_sales_score': 'Кросс-селл',
       'upsell_score': 'Апселл',
@@ -141,7 +182,7 @@ export default function Dashboard() {
   };
 
   const translateSpeaker = (speaker: string) => {
-    if (!speaker) return "";
+    if (typeof speaker !== 'string') return "";
     return speaker
       .replace('Barista', 'Бариста')
       .replace('Customer', 'Клиент')
@@ -153,11 +194,6 @@ export default function Dashboard() {
   const loadData = useCallback(async (isSilent = false) => {
     try {
       if (!isSilent) setLoading(true);
-      const startOfDay = selectedDate + 'T00:00:00.000Z';
-      const endOfDay = selectedDate + 'T23:59:59.999Z';
-
-      let query = supabase.from("dialogs").select("*");
-      query = query.gte("created_at", startOfDay).lte("created_at", endOfDay);
 
       const { data: shopsData, error: shopsErr } = await supabase.from("shops").select("*").order("name");
       if (shopsErr) console.error("shops error:", shopsErr);
@@ -182,7 +218,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -194,9 +230,17 @@ export default function Dashboard() {
         "postgres_changes",
         { event: "*", schema: "public", table: "agent_telemetry" },
         (payload) => {
-          setTelemetry((current) => 
-            current.map(agent => agent.agent_name === (payload.new as any).agent_name ? payload.new : agent)
-          );
+          if (payload.new && 'agent_name' in payload.new) {
+            const newAgent = payload.new as AgentTelemetry;
+            setTelemetry((current) => {
+              const exists = current.some(agent => agent.agent_name === newAgent.agent_name);
+              if (exists) {
+                return current.map(agent => agent.agent_name === newAgent.agent_name ? newAgent : agent);
+              } else {
+                return [...current, newAgent];
+              }
+            });
+          }
         }
       )
       .subscribe();
@@ -221,7 +265,9 @@ export default function Dashboard() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "app_status" },
         (payload) => {
-          setAppStatus(payload.new as AppStatus);
+          if (payload.new) {
+            setAppStatus(payload.new as AppStatus);
+          }
         }
       )
       .subscribe();
@@ -235,7 +281,7 @@ export default function Dashboard() {
 
   // 3. Computed Analytics
   const getDialogPercent = (dialog: DialogScore) => {
-    const details = (dialog.audit_details as any);
+    const details = dialog.audit_details;
     if (!details) return 0;
     if (details.dialogue_type === 'dialog') return 0;
     if (details.is_conflict) return 0;
@@ -267,6 +313,7 @@ export default function Dashboard() {
       dates[s] = { date: label, score: 0, count: 0 };
     }
     allDialogs.forEach(d => {
+      if (!d.created_at || !d.audit_details || d.audit_details.dialogue_type === 'dialog') return;
       const s = d.created_at.split('T')[0];
       if (dates[s]) {
         dates[s].score += getDialogPercent(d);
@@ -289,11 +336,11 @@ export default function Dashboard() {
       'order_duplication_score': { total: 0, count: 0 }
     };
     filteredDialogs.forEach(d => {
-      const details = (d as any).audit_details;
+      const details = d.audit_details;
       if (details) {
         Object.entries(details).forEach(([key, val]) => {
-          if (stats[key]) {
-            stats[key].total += val as number;
+          if (key in stats && typeof val === 'number') {
+            stats[key].total += val;
             stats[key].count += 1;
           }
         });
@@ -310,14 +357,14 @@ export default function Dashboard() {
     return shops
       .filter(shop => shop.name !== 'Офис работников' && shop.name !== 'Офис')
       .map(shop => {
-        const shopDialogs = filteredDialogs.filter(d => d.shop_id === shop.id && (d.audit_details as any)?.dialogue_type !== 'dialog');
+        const shopDialogs = filteredDialogs.filter(d => d.audit_details && d.audit_details.dialogue_type !== 'dialog' && d.shop_id === shop.id);
         const avgScorePercent = shopDialogs.length > 0
           ? Math.round(shopDialogs.reduce((acc, curr) => acc + getDialogPercent(curr), 0) / shopDialogs.length)
           : 0;
 
         // Weekly comparison for shop card chart
         const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
-        const weeklyDialogs = allDialogs.filter(d => d.shop_id === shop.id && new Date(d.created_at) >= weekAgo && (d.audit_details as any)?.dialogue_type !== 'dialog');
+        const weeklyDialogs = allDialogs.filter(d => d.audit_details && d.audit_details.dialogue_type !== 'dialog' && d.shop_id === shop.id && d.created_at && new Date(d.created_at) >= weekAgo);
         const weeklyAvgPercent = weeklyDialogs.length > 0
           ? Math.round(weeklyDialogs.reduce((acc, curr) => acc + getDialogPercent(curr), 0) / weeklyDialogs.length)
           : 0;
@@ -346,18 +393,20 @@ export default function Dashboard() {
   }, [shops, filteredDialogs, allDialogs]);
 
   const monthlyAnalytics = useMemo(() => {
-    // allDialogs represents last 30 days
-    const activeDialogs = allDialogs.filter(d => (d.audit_details as any)?.dialogue_type !== 'dialog');
+    // allDialogs represents last 30 days, we only care about fully audited dialogs that are standard sales scripts
+    const activeDialogs = allDialogs.filter(d => d.audit_details && d.audit_details.dialogue_type !== 'dialog');
 
     let missedUpsell = 0;
     let missedCrossSell = 0;
     let missedLoyalty = 0;
     
     activeDialogs.forEach(d => {
-      const details = d.audit_details as any;
-      if (details.upsell_score === 0) missedUpsell++;
-      if (details.cross_sales_score === 0) missedCrossSell++;
-      if (details.loyalty_score === 0) missedLoyalty++;
+      const details = d.audit_details;
+      if (details) {
+        if (details.upsell_score === 0) missedUpsell++;
+        if (details.cross_sales_score === 0) missedCrossSell++;
+        if (details.loyalty_score === 0) missedLoyalty++;
+      }
     });
 
     const lostRevenue = (missedUpsell * 80) + (missedCrossSell * 350) + (missedLoyalty * 600);
@@ -372,13 +421,15 @@ export default function Dashboard() {
     };
 
     activeDialogs.forEach(d => {
-      const details = d.audit_details as any;
-      Object.entries(details).forEach(([key, val]) => {
-        if (stats[key] !== undefined && typeof val === 'number') {
-          stats[key].total += val;
-          stats[key].count += 1;
-        }
-      });
+      const details = d.audit_details;
+      if (details) {
+        Object.entries(details).forEach(([key, val]) => {
+          if (key in stats && typeof val === 'number') {
+            stats[key].total += val;
+            stats[key].count += 1;
+          }
+        });
+      }
     });
     
     let worstMetric = { key: '', name: '', percent: 100 };
@@ -391,13 +442,14 @@ export default function Dashboard() {
 
     const shiftStats: Record<string, { stars: number, totalRaw: number, count: number, name: string, date: string }> = {};
     activeDialogs.forEach(d => {
+       if (!d.created_at) return;
        const dateStr = d.created_at.split('T')[0];
        const shiftKey = `${d.shop_id}_${dateStr}`;
        if (!shiftStats[shiftKey]) {
           const shopName = shops.find(s => s.id === d.shop_id)?.name || 'Неизвестно';
           shiftStats[shiftKey] = { stars: 0, totalRaw: 0, count: 0, name: shopName, date: dateStr };
        }
-       if ((d.audit_details as any)?.live_service_score >= 100) shiftStats[shiftKey].stars += 1;
+       if (d.audit_details?.live_service_score && d.audit_details.live_service_score >= 100) shiftStats[shiftKey].stars += 1;
        shiftStats[shiftKey].totalRaw += getDialogPercent(d);
        shiftStats[shiftKey].count += 1;
     });
@@ -430,13 +482,13 @@ export default function Dashboard() {
       'order_duplication_score': { total: 0, count: 0, violations: 0 }
     };
     shopDetails.forEach(d => {
-      const details = (d as any).audit_details;
+      const details = d.audit_details;
       if (details) {
         Object.entries(details).forEach(([key, val]) => {
-          if (stats[key]) {
-            stats[key].total += val as number;
+          if (key in stats && typeof val === 'number') {
+            stats[key].total += val;
             stats[key].count += 1;
-            if ((val as number) === 0) stats[key].violations += 1;
+            if (val === 0) stats[key].violations += 1;
           }
         });
       }
@@ -463,7 +515,7 @@ export default function Dashboard() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-50 dark:bg-[#050505] text-zinc-900 dark:text-zinc-900 dark:text-white pb-32 font-sans selection:bg-black/10 dark:selection:bg-white/20 antialiased overflow-x-hidden transition-colors duration-300">
+    <main className="min-h-screen bg-zinc-50 dark:bg-[#050505] text-zinc-900 dark:text-white pb-32 font-sans selection:bg-black/10 dark:selection:bg-white/20 antialiased overflow-x-hidden transition-colors duration-300">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_top_right,_#101524_0%,_transparent_40%)] pointer-events-none opacity-20 dark:opacity-50"></div>
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_bottom_left,_#0a1510_0%,_transparent_40%)] pointer-events-none opacity-10 dark:opacity-30"></div>
       
@@ -486,10 +538,11 @@ export default function Dashboard() {
                     <>
                        {/* Compact Date Picker for Mobile */}
                        <div className="relative">
-                          <button onClick={(e) => { const input = e.currentTarget.nextElementSibling as HTMLInputElement; input?.showPicker(); }} className="flex items-center justify-center bg-zinc-100 dark:bg-zinc-900 border border-black/5 dark:border-white/5 rounded-lg w-10 h-10">
+                          <button onClick={() => mobileDateInputRef.current?.showPicker()} className="flex items-center justify-center bg-zinc-100 dark:bg-zinc-900 border border-black/5 dark:border-white/5 rounded-lg w-10 h-10">
                             <Calendar size={18} className="text-zinc-600 dark:text-zinc-400" />
                           </button>
                           <input 
+                            ref={mobileDateInputRef}
                             type="date" 
                             value={selectedDate}
                             onChange={(e) => { setSelectedDate(e.target.value); setView('dashboard'); }}
@@ -539,7 +592,7 @@ export default function Dashboard() {
                           <input 
                             type="date" 
                             value={selectedDate}
-                            onClick={(e) => (e.target as HTMLInputElement).showPicker()}
+                            onClick={(e) => e.currentTarget.showPicker()}
                             onChange={(e) => { setSelectedDate(e.target.value); setView('dashboard'); }}
                             className="bg-white dark:bg-[#0c0d12] border border-black/5 dark:border-white/5 rounded-xl px-4 py-2 flex items-center text-[11px] font-bold uppercase text-zinc-600 dark:text-zinc-400 focus:outline-none [color-scheme:light] dark:[color-scheme:dark] cursor-pointer"
                           />
@@ -573,65 +626,65 @@ export default function Dashboard() {
                )}
             </header>
 
-                        {view === 'admin' ? (
+            {view === 'admin' ? (
               <div className="space-y-12 animate-in fade-in slide-in-from-bottom-10 duration-700">
                 <div className="flex items-center justify-between">
                    <h2 className="text-3xl font-black tracking-tighter flex items-center gap-3 text-zinc-900 dark:text-white">
-                      <ShieldCheck className="text-indigo-500" /> Офис агентов (Служба оркестрации)
+                      <ShieldCheck className="text-indigo-500 animate-pulse" /> Офис агентов (Служба оркестрации)
                    </h2>
                 </div>
               
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                    {/* OFFICE ZONE */}
-                   <div className="bg-[#2a2d34] dark:bg-[#1a1c23] border-4 border-zinc-700/50 rounded-3xl p-8 relative shadow-2xl flex flex-col">
-                      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/black-scales.png')] opacity-20 pointer-events-none"></div>
-                      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-white/50 mb-10 text-center relative z-10 border-b-2 border-white/10 pb-4">
+                   <div className="glass-card rounded-3xl p-8 relative overflow-hidden shadow-2xl flex flex-col border border-white/10">
+                      <div className="absolute inset-0 bg-grid-pattern opacity-10 pointer-events-none"></div>
+                      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-zinc-800 dark:text-white/70 mb-10 text-center relative z-10 border-b border-black/5 dark:border-white/10 pb-4">
                          🏢 Секретный Офис (Work Zone)
                       </h3>
                       
                       <div className="flex-1 grid grid-cols-2 gap-6 relative z-10">
                          {/* Supervisor Desk (Always occupied by Boss) */}
-                         <div className="col-span-2 bg-gradient-to-b from-orange-500/20 to-black/40 border-2 border-orange-500/50 rounded-2xl p-6 flex items-center justify-between relative overflow-hidden shadow-[0_0_30px_rgb(249,115,22,0.1)]">
+                         <div className="col-span-2 bg-gradient-to-r from-orange-500/20 via-orange-500/10 to-transparent border border-orange-500/30 rounded-2xl p-6 flex items-center justify-between relative overflow-hidden shadow-[0_0_20px_rgba(249,115,22,0.15)]">
                             <div className="absolute -right-4 -top-4 w-24 h-24 bg-orange-500/20 rounded-full blur-2xl"></div>
                             <div>
-                               <h4 className="text-orange-500 font-bold uppercase tracking-widest text-xs mb-1">Надзиратель</h4>
-                               <div className="text-white font-black text-xl flex items-center gap-3">
+                               <h4 className="text-orange-500 font-bold uppercase tracking-widest text-[9px] mb-1">Надзиратель</h4>
+                               <div className="text-zinc-900 dark:text-white font-black text-xl flex items-center gap-3">
                                   <span className="text-3xl">🐢</span> Микеланджело
                                </div>
                             </div>
-                            <div className="bg-black/40 px-4 py-2 rounded-lg border border-white/10 text-xs font-mono text-emerald-400 animate-pulse">
+                            <div className="bg-orange-500/10 dark:bg-black/40 px-4 py-2 rounded-lg border border-orange-500/20 text-xs font-mono text-orange-500 dark:text-orange-400 animate-pulse">
                                СЛЕДИТ ЗА ПОРЯДКОМ
                             </div>
                          </div>
 
                          {/* 3 Computers */}
                          {[
-                            { name: "Audio Diarization Agent", role: "Диаризатор", turtle: "Леонардо", color: "blue", emoji: "🐢", mask: "from-blue-500/20 to-black/40", border: "border-blue-500/50", glow: "bg-blue-500/20" },
-                            { name: "Diarization Editor", role: "Редактор", turtle: "Донателло", color: "purple", emoji: "🐢", mask: "from-purple-500/20 to-black/40", border: "border-purple-500/50", glow: "bg-purple-500/20" },
-                            { name: "QA Analyst", role: "QA Аналитик", turtle: "Рафаэль", color: "red", emoji: "🐢", mask: "from-red-500/20 to-black/40", border: "border-red-500/50", glow: "bg-red-500/20" }
+                            { name: "Audio Diarization Agent", role: "Диаризатор", turtle: "Леонардо", color: "blue", emoji: "🐢", mask: "from-blue-500/15 via-blue-500/5 to-transparent", border: "border-blue-500/30", glow: "rgba(59,130,246,0.15)", text: "text-blue-500" },
+                            { name: "Diarization Editor", role: "Редактор", turtle: "Донателло", color: "purple", emoji: "🐢", mask: "from-purple-500/15 via-purple-500/5 to-transparent", border: "border-purple-500/30", glow: "rgba(168,85,247,0.15)", text: "text-purple-500" },
+                            { name: "QA Analyst", role: "QA Аналитик", turtle: "Рафаэль", color: "red", emoji: "🐢", mask: "from-rose-500/15 via-rose-500/5 to-transparent", border: "border-rose-500/30", glow: "rgba(244,63,94,0.15)", text: "text-rose-500" }
                          ].map((desk, idx) => {
-                            const agentIsBusy = telemetry.find(t => t.agent_name === desk.name && t.status === 'BUSY');
+                            const agentIsBusy = telemetry.find(t => t.agent_name?.trim().toLowerCase() === desk.name.toLowerCase() && t.status?.trim().toUpperCase() === 'BUSY');
                             
                             return (
-                               <div key={idx} className={`relative flex flex-col items-center justify-center p-6 border-2 rounded-2xl backdrop-blur-sm transition-all duration-500 ${agentIsBusy ? desk.mask + ' ' + desk.border + ' shadow-[0_0_20px_rgb(255,255,255,0.05)]' : 'bg-black/40 border-black/50 opacity-60 grayscale'}`}>
-                                  {agentIsBusy && <div className={`absolute -inset-2 ${desk.glow} rounded-3xl blur-2xl -z-10`}></div>}
+                               <div key={idx} className={`relative flex flex-col items-center justify-center p-6 border rounded-2xl backdrop-blur-sm transition-all duration-500 ${agentIsBusy ? `bg-gradient-to-b ${desk.mask} ${desk.border} shadow-[0_0_20px_${desk.glow}]` : 'bg-black/5 dark:bg-black/40 border-black/10 dark:border-black/50 opacity-40 grayscale'}`}>
+                                  {agentIsBusy && <div className={`absolute -inset-2 bg-gradient-to-r ${desk.mask} rounded-3xl blur-2xl -z-10`}></div>}
                                   
-                                  <div className="text-zinc-600 mb-4">
+                                  <div className="text-zinc-400 dark:text-zinc-600 mb-4">
                                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
                                   </div>
                                   
                                   {agentIsBusy ? (
                                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center animate-bounce">
                                         <span className="text-4xl filter drop-shadow-lg">{desk.emoji}</span>
-                                        <span className={`text-xs font-black uppercase mt-2 px-2 py-1 bg-black/80 rounded border ${desk.border} text-white`}>{desk.turtle}</span>
+                                        <span className={`text-[10px] font-black uppercase mt-2 px-2.5 py-1 bg-zinc-950/80 rounded border ${desk.border} text-white`}>{desk.turtle}</span>
                                      </div>
                                   ) : (
-                                     <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{desk.role}</span>
+                                     <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest">{desk.role}</span>
                                   )}
 
                                   {agentIsBusy && (
-                                     <div className="absolute -top-4 bg-black/80 border border-white/20 text-white text-[9px] px-3 py-1 rounded-full whitespace-nowrap overflow-hidden max-w-[90%] text-ellipsis">
-                                        {(agentIsBusy.active_task || "Обработка аудио...").substring(0, 20)}...
+                                     <div className="absolute -top-3 bg-zinc-900/90 border border-white/10 text-white text-[9px] px-3 py-1 rounded-full whitespace-nowrap overflow-hidden max-w-[90%] text-ellipsis font-mono">
+                                        {(agentIsBusy.active_task || "Анализ...").substring(0, 20)}...
                                      </div>
                                   )}
                                </div>
@@ -641,41 +694,41 @@ export default function Dashboard() {
                    </div>
               
                    {/* CHILL ZONE */}
-                   <div className="bg-[#1a1c23] dark:bg-[#111216] border-4 border-zinc-800/80 rounded-3xl p-8 relative shadow-inner overflow-hidden flex flex-col">
-                      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/brick-wall.png')] opacity-[0.03] pointer-events-none"></div>
-                      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-zinc-500 mb-10 text-center relative z-10 border-b-2 border-zinc-800 pb-4">
+                   <div className="glass-card rounded-3xl p-8 relative overflow-hidden shadow-inner flex flex-col border border-white/10">
+                      <div className="absolute inset-0 bg-grid-pattern opacity-5 pointer-events-none"></div>
+                      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-zinc-800 dark:text-white/70 mb-10 text-center relative z-10 border-b border-black/5 dark:border-white/10 pb-4">
                          🍕 Чилл-Зона (Idle)
                       </h3>
                       
-                      <div className="flex-1 flex flex-wrap content-start gap-4 relative z-10 p-6 bg-black/20 rounded-2xl border border-white/5">
+                      <div className="flex-1 flex flex-col gap-4 relative z-10 p-6 bg-black/5 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5">
                          {[
-                            { name: "Audio Diarization Agent", turtle: "Леонардо", emoji: "🐢", colorText: "text-blue-500", bg: "bg-blue-500/10" },
-                            { name: "Diarization Editor", turtle: "Донателло", emoji: "🐢", colorText: "text-purple-500", bg: "bg-purple-500/10" },
-                            { name: "QA Analyst", turtle: "Рафаэль", emoji: "🐢", colorText: "text-red-500", bg: "bg-red-500/10" }
+                            { name: "Audio Diarization Agent", turtle: "Леонардо", emoji: "🐢", colorText: "text-blue-500 border-blue-500/20", bg: "bg-blue-500/5 dark:bg-blue-500/10" },
+                            { name: "Diarization Editor", turtle: "Донателло", emoji: "🐢", colorText: "text-purple-500 border-purple-500/20", bg: "bg-purple-500/5 dark:bg-purple-500/10" },
+                            { name: "QA Analyst", turtle: "Рафаэль", emoji: "🐢", colorText: "text-rose-500 border-rose-500/20", bg: "bg-rose-500/5 dark:bg-rose-500/10" }
                          ].map((desk, idx) => {
-                            const isChilling = !telemetry.find(t => t.agent_name === desk.name && t.status === 'BUSY');
+                            const isChilling = !telemetry.find(t => t.agent_name?.trim().toLowerCase() === desk.name.toLowerCase() && t.status?.trim().toUpperCase() === 'BUSY');
                             if (!isChilling) return null;
 
                             return (
-                               <div key={idx} className={`flex items-center gap-4 ${desk.bg} border-l-4 border-current ${desk.colorText} p-4 rounded-r-xl w-full hover:scale-[1.02] transition-transform cursor-default`}>
+                               <div key={idx} className={`flex items-center gap-4 ${desk.bg} border-l-4 border-current ${desk.colorText} p-4 rounded-r-xl w-full hover:scale-[1.01] transition-all duration-300 cursor-default`}>
                                   <div className="text-3xl relative">
                                      {desk.emoji}
-                                     <span className="absolute -top-1 -right-2 text-xl animate-pulse">🍕</span>
+                                     <span className="absolute -top-1 -right-2 text-xl animate-bounce">🍕</span>
                                   </div>
                                   <div>
-                                     <h4 className="font-black uppercase tracking-widest text-sm text-white">{desk.turtle}</h4>
-                                     <p className="text-[10px] font-bold text-zinc-500 uppercase">Смотрит телик / Waiting</p>
+                                     <h4 className="font-black uppercase tracking-widest text-xs text-zinc-900 dark:text-white">{desk.turtle}</h4>
+                                     <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase mt-0.5">Ест пиццу / Ожидает задачи</p>
                                   </div>
                                </div>
                             )
                          })}
                          
-                         {telemetry.filter(t => t.status === 'BUSY').length === 3 && (
-                            <div className="text-zinc-600 text-sm italic py-10 text-center w-full">Чилл-зона пуста. Все ебашат!</div>
-                         )}
-                      </div>
-                   </div>
-                </div>
+                         {telemetry.filter(t => t.status?.trim().toUpperCase() === 'BUSY').length === 3 && (
+                             <div className="text-zinc-400 dark:text-zinc-500 text-sm italic py-10 text-center w-full">Чилл-зона пуста. Все ебашат!</div>
+                          )}
+                       </div>
+                    </div>
+                 </div>
               </div>
             ) : view === 'analytics' ? (
               /* VIEW 3: Analytics View */
@@ -775,7 +828,7 @@ export default function Dashboard() {
                        const dateStr = getLocalDateStr(d);
                        const displayDate = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
                        
-                       const dayDialogs = allDialogs.filter(dx => dx.created_at?.startsWith(dateStr) && (dx.audit_details as any)?.dialogue_type !== 'dialog');
+                       const dayDialogs = allDialogs.filter(dx => dx.created_at?.startsWith(dateStr) && dx.audit_details?.dialogue_type !== 'dialog');
                        let total = 0;
                        dayDialogs.forEach(dx => total += getDialogPercent(dx));
                        const avg = dayDialogs.length > 0 ? (total / dayDialogs.length).toFixed(1) : '--';
@@ -808,23 +861,43 @@ export default function Dashboard() {
                       </div>
                       <div className="h-[300px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={networkTrend}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                          <AreaChart data={networkTrend}>
+                            <defs>
+                              <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke={isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)"} vertical={false} />
                             <XAxis 
                               dataKey="name" 
-                              stroke="#3f3f46" fontSize={9} fontWeight="bold" 
+                              stroke="#71717a" fontSize={9} fontWeight="bold" 
                               tickLine={false} axisLine={false} dy={10}
                             />
                             <YAxis hide domain={[0, 100]} />
                             <Tooltip 
-                              contentStyle={{ backgroundColor: isDark ? '#0c0d12' : '#ffffff', border: isDark ? '1px solid #ffffff10' : '1px solid #00000010', borderRadius: '12px', fontSize: '9px', color: isDark ? '#fff' : '#000' }}
+                              contentStyle={{ 
+                                backgroundColor: isDark ? 'rgba(15, 17, 23, 0.8)' : 'rgba(255, 255, 255, 0.85)', 
+                                border: isDark ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 0, 0, 0.05)', 
+                                borderRadius: '16px', 
+                                fontSize: '10px', 
+                                color: isDark ? '#fff' : '#000',
+                                backdropFilter: 'blur(12px)',
+                                boxShadow: '0 10px 30px rgba(0,0,0,0.15)'
+                              }}
                               itemStyle={{ color: isDark ? '#fff' : '#000', fontWeight: 'bold' }}
                             />
-                            <Line 
-                              type="monotone" dataKey="Оценка" stroke={isDark ? "#ffffff" : "#000000"} 
-                              strokeWidth={2} dot={{ r: 3, fill: isDark ? '#fff' : '#000' }}
+                            <Area 
+                              type="monotone" 
+                              dataKey="Оценка" 
+                              stroke="#10b981" 
+                              strokeWidth={3} 
+                              fillOpacity={1}
+                              fill="url(#colorScore)"
+                              dot={{ r: 4, stroke: "#10b981", strokeWidth: 2, fill: isDark ? "#0c0d12" : "#ffffff" }}
+                              activeDot={{ r: 6, stroke: "#10b981", strokeWidth: 2, fill: "#10b981" }}
                             />
-                          </LineChart>
+                          </AreaChart>
                         </ResponsiveContainer>
                       </div>
                    </div>
@@ -987,11 +1060,15 @@ export default function Dashboard() {
                             <span className="text-[11px] font-bold text-zinc-500 uppercase">
                                {new Date(dialog.created_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute:'2-digit'})}
                             </span>
-                            {(dialog.audit_details as any)?.dialogue_type === 'additional_order' ? (
+                            {!dialog.audit_details ? (
+                               <span className="bg-zinc-500/10 text-zinc-500 border border-zinc-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
+                                 Анализ...
+                               </span>
+                            ) : dialog.audit_details.dialogue_type === 'additional_order' ? (
                                <span className="bg-blue-500/10 text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
                                  Дозаказ
                                </span>
-                            ) : (dialog.audit_details as any)?.dialogue_type === 'dialog' ? (
+                            ) : dialog.audit_details.dialogue_type === 'dialog' ? (
                                <span className="bg-amber-500/10 text-amber-500 border border-amber-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
                                  Разговор
                                </span>
@@ -1000,14 +1077,14 @@ export default function Dashboard() {
                                  Заказ
                                </span>
                             )}
-                            {(dialog.audit_details as any)?.is_conflict && (
+                            {dialog.audit_details?.is_conflict && (
                                <span className="bg-rose-500 text-white border border-rose-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest animate-pulse shadow-[0_0_10px_rgba(244,63,94,0.5)]">
                                  Конфликт
                                </span>
                             )}
                          </div>
-                         <div className={`text-4xl font-light tracking-tight ${(dialog.audit_details as any)?.dialogue_type === 'dialog' ? 'text-amber-500/50 text-3xl' : (getDialogPercent(dialog) >= 80 ? 'text-emerald-500' : 'text-rose-500')}`}>
-                           {(dialog.audit_details as any)?.dialogue_type === 'dialog' ? 'Н/А' : `${getDialogPercent(dialog)}%`}
+                         <div className={`text-4xl font-light tracking-tight ${!dialog.audit_details ? 'text-zinc-500 text-3xl' : dialog.audit_details.dialogue_type === 'dialog' ? 'text-amber-500/50 text-3xl' : (getDialogPercent(dialog) >= 80 ? 'text-emerald-500' : 'text-rose-500')}`}>
+                           {!dialog.audit_details ? '—' : dialog.audit_details.dialogue_type === 'dialog' ? 'Н/А' : `${getDialogPercent(dialog)}%`}
                          </div>
                       </div>
 
@@ -1027,9 +1104,10 @@ export default function Dashboard() {
                                         { key: 'loyalty_score', label: 'Лояльность' },
                                         { key: 'order_duplication_score', label: 'Дубл. заказа' }
                                       ].map((metric) => {
-                                        const score = (dialog.audit_details as any)?.[metric.key] || 0;
-                                        const isDialog = (dialog.audit_details as any)?.dialogue_type === 'dialog';
-                                        const isExcluded = isDialog;
+                                        const details = dialog.audit_details;
+                                        const score = details ? (details[metric.key as keyof typeof details] as number) || 0 : 0;
+                                        const isDialog = details?.dialogue_type === 'dialog';
+                                        const isExcluded = isDialog || !details;
                                         const percent = isExcluded ? 0 : score;
                                         
                                         return (
@@ -1048,14 +1126,14 @@ export default function Dashboard() {
                                       })}
 
                                       {/* LIVE SERVICE BADGE */}
-                                      {!((dialog.audit_details as any)?.dialogue_type === 'dialog') && (
+                                      {dialog.audit_details && dialog.audit_details.dialogue_type !== 'dialog' && (
                                         <div className="mt-8 pt-6 border-t border-black/5 dark:border-white/5 space-y-4">
                                            <div className="flex items-center justify-between">
                                               <h4 className="text-[10px] font-bold text-amber-500 uppercase flex items-center gap-2">
                                                 <Star size={12} /> Живой сервис
                                               </h4>
-                                              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${(dialog.audit_details as any)?.live_service_score >= 75 ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-black/10 dark:bg-white/10 text-zinc-500'}`}>
-                                                {`${(dialog.audit_details as any)?.live_service_score || 0}%`}
+                                              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${(dialog.audit_details.live_service_score || 0) >= 75 ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-black/10 dark:bg-white/10 text-zinc-500'}`}>
+                                                {`${dialog.audit_details.live_service_score || 0}%`}
                                               </span>
                                            </div>
                                         </div>
@@ -1079,7 +1157,8 @@ export default function Dashboard() {
                                             {dialog.audit_details.emotion_stats.split(',').map((stat: string, i: number) => {
                                               const [name, valStr] = stat.trim().split('=');
                                               if (!name || !valStr) return null;
-                                              const val = parseFloat(valStr) * 100;
+                                              let val = parseFloat(valStr) * 100;
+                                              if (isNaN(val)) val = 0;
                                               
                                               let color = "bg-zinc-500";
                                               let label = name;
@@ -1123,19 +1202,38 @@ export default function Dashboard() {
                                  </div>
                               </div>
                               <div className="lg:col-span-7">
-                                  <div className="bg-white dark:bg-black/20 p-6 md:p-10 rounded-3xl h-[500px] overflow-y-auto custom-scrollbar border border-black/5 dark:border-white/5 shadow-inner dark:shadow-none relative">
-                                    {dialog.transcript?.map((line, idx) => (
-                                      <div 
-                                        key={idx} 
-                                        onClick={() => playPhrase(dialog, line.start)} 
-                                        ref={(el) => { if (idx === activePhraseIndex) transcriptRefs.current[idx] = el; }}
-                                         className={`p-4 rounded-2xl cursor-pointer transition-all mb-2 border ${idx === activePhraseIndex ? 'bg-blue-50 dark:bg-white/10 border-blue-100 dark:border-white/10 shadow-sm dark:shadow-none text-blue-900 dark:text-white' : 'hover:bg-black/5 dark:hover:bg-white/5 border-transparent text-zinc-700 dark:text-zinc-300'}`}
-                                      >
-                                        <span className="text-[10px] text-emerald-500 font-bold block mb-1">{formatTime(line.start)} - {translateSpeaker(line.speaker)}</span>
-                                        <p className="text-zinc-900 dark:text-white text-sm">{line.text}</p>
-                                      </div>
-                                    ))}
-                                 </div>
+                                  <div className="bg-zinc-50 dark:bg-black/20 p-6 md:p-8 rounded-3xl h-[500px] overflow-y-auto custom-scrollbar border border-black/5 dark:border-white/5 shadow-inner dark:shadow-none relative flex flex-col gap-3">
+                                    {dialog.transcript?.map((line, idx) => {
+                                      const isBarista = line.speaker?.toLowerCase().includes('barista');
+                                      const isActive = idx === activePhraseIndex;
+                                      
+                                      return (
+                                        <div 
+                                          key={idx} 
+                                          onClick={() => playPhrase(dialog, line.start)} 
+                                          ref={(el) => { transcriptRefs.current[idx] = el; }}
+                                          className={`p-4 rounded-2xl cursor-pointer transition-all duration-300 border max-w-[85%] md:max-w-[75%] ${
+                                            isBarista 
+                                              ? `self-start rounded-tl-none ${
+                                                  isActive 
+                                                    ? 'bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border-l-4 border-l-emerald-500 border-y-emerald-500/10 border-r-emerald-500/10 dark:border-y-emerald-500/20 dark:border-r-emerald-500/20 shadow-[0_4px_20px_rgba(16,185,129,0.1)] text-emerald-950 dark:text-emerald-100' 
+                                                    : 'bg-white dark:bg-zinc-900/40 border-l-4 border-l-emerald-500/50 border-y-transparent border-r-transparent hover:bg-zinc-100 dark:hover:bg-zinc-900/60 border-t-transparent border-b-transparent border-r-transparent text-zinc-700 dark:text-zinc-300'
+                                                }`
+                                              : `self-end rounded-tr-none ${
+                                                  isActive 
+                                                    ? 'bg-gradient-to-r from-indigo-500/10 to-indigo-500/5 border-l-4 border-l-indigo-500 border-y-indigo-500/10 border-r-indigo-500/10 dark:border-y-indigo-500/20 dark:border-r-indigo-500/20 shadow-[0_4px_20px_rgba(99,102,241,0.1)] text-indigo-950 dark:text-indigo-100' 
+                                                    : 'bg-white dark:bg-zinc-900/40 border-l-4 border-l-indigo-500/50 border-y-transparent border-r-transparent hover:bg-zinc-100 dark:hover:bg-zinc-900/60 border-t-transparent border-b-transparent border-r-transparent text-zinc-700 dark:text-zinc-300'
+                                                }`
+                                          }`}
+                                        >
+                                          <span className={`text-[10px] font-bold block mb-1.5 ${isBarista ? 'text-emerald-500 dark:text-emerald-400' : 'text-indigo-500 dark:text-indigo-400'}`}>
+                                            {formatTime(line.start)} — {translateSpeaker(line.speaker)}
+                                          </span>
+                                          <p className="text-zinc-900 dark:text-white text-sm leading-relaxed">{line.text}</p>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
                               </div>
                            </div>
                         </div>
@@ -1148,39 +1246,64 @@ export default function Dashboard() {
       </div>
 
       {activeDialog && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 animate-in slide-in-from-bottom duration-500 md:pb-8 pointer-events-none flex justify-center">
-           <div className="w-full md:max-w-6xl md:px-6 pointer-events-auto">
-              <div className="bg-white/95 dark:bg-zinc-900/95 backdrop-blur-3xl md:border border-black/10 dark:border-white/10 md:rounded-[2.5rem] rounded-t-[2rem] p-4 md:p-6 flex flex-col md:flex-row items-center gap-4 md:gap-10 shadow-[0_-10px_40px_rgb(0,0,0,0.1)] dark:shadow-2xl shadow-black/10 dark:shadow-black/50 border-t border-black/5 dark:border-white/10">
+        <div className="fixed bottom-0 left-0 right-0 z-50 animate-in slide-in-from-bottom duration-500 pb-4 md:pb-8 pointer-events-none flex justify-center">
+           <div className="w-full max-w-5xl px-4 md:px-6 pointer-events-auto">
+              <div className="bg-zinc-900/90 dark:bg-black/80 backdrop-blur-2xl border border-white/10 rounded-3xl md:rounded-full p-4 md:p-5 flex flex-col md:flex-row items-center gap-4 md:gap-8 shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
                  
-                 <div className="flex items-center justify-between w-full md:w-auto md:min-w-[250px] shrink-0">
-                    <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 md:w-16 md:h-16 bg-emerald-500 rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/20">
-                           <Volume2 size={24} className="text-black md:w-8 md:h-8" />
+                 {/* Left side: Dialogue info & Equalizer */}
+                 <div className="flex items-center justify-between w-full md:w-auto md:min-w-[240px] shrink-0 gap-4">
+                    <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 bg-gradient-to-tr from-emerald-500 to-indigo-600 rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/10 relative overflow-hidden group">
+                           <div className="absolute inset-0 bg-black/20" />
+                           {isPlaying ? (
+                             <div className="flex items-end gap-0.5 h-5 w-5 shrink-0 justify-center">
+                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-1" />
+                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-2" />
+                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-3" />
+                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-4" />
+                             </div>
+                           ) : (
+                             <Volume2 size={20} className="text-white relative z-10" />
+                           )}
                         </div>
                         <div>
-                           <h4 className="font-bold text-sm md:text-base tracking-tight mb-0.5 md:mb-1 text-zinc-900 dark:text-white line-clamp-1">Диалог #{activeDialog?.dialog_index}</h4>
-                           <p className="text-[9px] md:text-[10px] font-bold text-zinc-500 uppercase line-clamp-1">{shops.find(s => s.id === activeDialog?.shop_id)?.name}</p>
+                           <h4 className="font-bold text-sm tracking-tight text-white line-clamp-1">Диалог #{activeDialog?.dialog_index}</h4>
+                           <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider line-clamp-1">{shops.find(s => s.id === activeDialog?.shop_id)?.name}</p>
                         </div>
                     </div>
                     {/* Mobile Close Button */}
-                    <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="md:hidden w-10 h-10 flex items-center justify-center text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors bg-black/5 dark:bg-white/5 rounded-full">
-                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="md:hidden w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-white transition-colors bg-white/5 rounded-full">
+                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
                  </div>
 
-                 <div className="flex-1 flex flex-col md:flex-col-reverse gap-3 md:gap-3 w-full">
+                 {/* Center/Main: Seek and Play Controls */}
+                 <div className="flex-1 flex flex-col md:flex-row items-center gap-4 w-full">
                     {activeDialog.audio_url ? (
                        <>
-                          {/* Progress Bar interactive */}
-                          <div className="flex items-center gap-3">
-                             <span className="text-[9px] md:text-[10px] font-bold text-zinc-400 min-w-[32px] md:min-w-[35px] font-mono text-right">{formatTime(currentTime)}</span>
-                             <div className="flex-1 relative h-2 md:h-2 bg-black/5 dark:bg-white/5 rounded-full overflow-hidden flex items-center group">
-                                <div className="absolute left-0 top-0 bottom-0 bg-emerald-500 pointer-events-none transition-all duration-75 group-hover:bg-emerald-400" style={{ width: `${(currentTime / duration) * 100}%` }} />
+                          {/* Play/Pause controls */}
+                          <div className="flex items-center gap-4 shrink-0 justify-center">
+                             <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.max(0, currentTime - 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-zinc-400 hover:text-white transition-colors p-1" title="-10 сек">
+                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg>
+                             </button>
+                             <button onClick={togglePlay} className="w-11 h-11 bg-white hover:bg-zinc-200 text-black rounded-full flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition-all">
+                                {isPlaying ? <PauseCircle size={22} className="text-black" /> : <PlayCircle size={24} className="ml-0.5 text-black" />}
+                             </button>
+                             <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.min(duration, currentTime + 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-zinc-400 hover:text-white transition-colors p-1" title="+10 сек">
+                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
+                             </button>
+                          </div>
+
+                          {/* Progress Bar interactive with glow styling */}
+                          <div className="flex-1 flex items-center gap-3 w-full">
+                             <span className="text-[10px] font-bold text-zinc-400 min-w-[35px] font-mono text-right">{formatTime(currentTime)}</span>
+                             <div className="flex-1 relative h-2 bg-white/10 rounded-full overflow-hidden flex items-center group">
+                                <div className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-emerald-500 via-emerald-400 to-indigo-500 pointer-events-none transition-all duration-75 group-hover:from-emerald-400 group-hover:to-indigo-400 shadow-[0_0_8px_rgba(16,185,129,0.5)]" style={{ width: `${duration && !isNaN(duration) && !isNaN(currentTime) ? (currentTime / duration) * 100 : 0}%` }} />
                                 <input 
                                    type="range" 
                                    min="0" 
-                                   max={duration || 100} 
-                                   value={currentTime} 
+                                   max={duration && !isNaN(duration) ? duration : 100} 
+                                   value={isNaN(currentTime) ? 0 : currentTime} 
                                    onChange={(e) => { 
                                      const time = Number(e.target.value); 
                                      if (audioRef.current) audioRef.current.currentTime = time; 
@@ -1189,33 +1312,20 @@ export default function Dashboard() {
                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer pointer-events-auto" 
                                 />
                              </div>
-                             <span className="text-[9px] md:text-[10px] font-bold text-zinc-400 min-w-[32px] md:min-w-[35px] font-mono">{formatTime(duration)}</span>
-                          </div>
-
-                          <div className="flex items-center justify-center gap-8 relative">
-                             {/* Desktop Play Buttons */}
-                             <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.max(0, currentTime - 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">
-                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg>
-                             </button>
-                             <button onClick={togglePlay} className="w-12 h-12 md:w-14 md:h-14 bg-zinc-900 dark:bg-white text-white dark:text-black rounded-full flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition-all">
-                                {isPlaying ? <PauseCircle size={24} /> : <PlayCircle size={28} className="ml-1" />}
-                             </button>
-                             <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.min(duration, currentTime + 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">
-                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
-                             </button>
+                             <span className="text-[10px] font-bold text-zinc-400 min-w-[35px] font-mono">{formatTime(duration)}</span>
                           </div>
                        </>
                     ) : (
-                       <div className="flex flex-col items-center justify-center text-center mt-2 md:mt-0 py-2 border border-dashed border-black/10 dark:border-white/10 rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]">
-                          <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">Аудиофайл не загружен на сервер</span>
-                          <span className="text-[9px] text-zinc-400 dark:text-zinc-500 uppercase tracking-widest mt-1">OGG скрыт оркестратором</span>
+                       <div className="w-full flex flex-col items-center justify-center text-center py-2 border border-dashed border-white/10 rounded-2xl bg-white/[0.02]">
+                          <span className="text-xs font-bold text-zinc-300">Аудиофайл не загружен на сервер</span>
+                          <span className="text-[9px] text-zinc-500 uppercase tracking-widest mt-1">OGG скрыт оркестратором</span>
                        </div>
                     )}
                  </div>
 
-                 {/* Desktop Close Button */}
-                 <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="hidden md:flex w-12 h-12 items-center justify-center text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 transition-colors rounded-full shrink-0">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                 {/* Right: Desktop Close Button */}
+                 <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="hidden md:flex w-10 h-10 items-center justify-center text-zinc-400 hover:text-white hover:bg-white/5 transition-colors rounded-full shrink-0">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                  </button>
                  
               </div>
