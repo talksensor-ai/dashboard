@@ -1054,8 +1054,8 @@ export default function Dashboard() {
                                               <h4 className="text-[10px] font-bold text-amber-500 uppercase flex items-center gap-2">
                                                 <Star size={12} /> Живой сервис
                                               </h4>
-                                              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${(dialog.audit_details as any)?.live_service_score >= 100 ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-black/10 dark:bg-white/10 text-zinc-500'}`}>
-                                                {(dialog.audit_details as any)?.live_service_score >= 110 ? '🌟 100%' : `${(dialog.audit_details as any)?.live_service_score || 0}%`}
+                                              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${(dialog.audit_details as any)?.live_service_score >= 75 ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-black/10 dark:bg-white/10 text-zinc-500'}`}>
+                                                {`${(dialog.audit_details as any)?.live_service_score || 0}%`}
                                               </span>
                                            </div>
                                         </div>
