@@ -1792,9 +1792,16 @@ export default function Dashboard() {
                                   })}
                                 </div>
                               </div>
-                              <button onClick={() => playPhrase(dialog, 0)} className="self-start bg-[#007AFF] text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-[#0066CC] active:scale-95 transition-all flex items-center gap-2 shadow-sm">
-                                <PlayCircle size={16} /> Прослушать целиком
-                              </button>
+                              {dialog.audio_url ? (
+                                <button onClick={() => playPhrase(dialog, dialog.transcript && dialog.transcript.length > 0 ? dialog.transcript[0].start : 0)} className="self-start bg-[#007AFF] text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-[#0066CC] active:scale-95 transition-all flex items-center gap-2 shadow-sm">
+                                  <PlayCircle size={16} /> Прослушать целиком
+                                </button>
+                              ) : (
+                                <div className="self-start bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#86868B] px-5 py-2.5 rounded-xl font-semibold text-sm flex items-center gap-2 shadow-sm">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                  Аудио загружается...
+                                </div>
+                              )}
                             </div>
 
                             {/* ═══ RIGHT: Analytics (6/12) ═══ */}
@@ -1992,7 +1999,6 @@ export default function Dashboard() {
           <audio 
             ref={audioRef} 
             src={activeDialog.audio_url} 
-            crossOrigin="anonymous"
             preload="auto"
             onTimeUpdate={handleTimeUpdate} 
             onLoadedMetadata={handleLoadedMetadata} 
