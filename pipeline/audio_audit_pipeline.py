@@ -61,8 +61,8 @@ def run_gigaam(audio_path, output_txt="audit_dialogues.txt"):
     
     # Настройки нарезки: чанк 30с, шаг 24с (6с перекрытие)
     # Было: 24с/18с → ~200 вызовов на час. Стало: 30с/24с → ~150 вызовов (-25%)
-    chunk_len_sec = 30.0
-    step_sec = 24.0
+    chunk_len_sec = 24.0
+    step_sec = 18.0
 
     all_words = []
 

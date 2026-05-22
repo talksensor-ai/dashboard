@@ -146,7 +146,7 @@ def push_report_to_supabase(json_path: str, shop_id: int = 1, audio_path: str = 
 
         row = {
             "shop_id": shop_id,
-            "dialog_index": idx + 1,
+            "dialog_index": dialog.get("dialog_index") or dialog.get("idx") or (idx + 1),
             "original_audio_file": safe_file_name if public_audio_url else f"dialog_{idx+1}.ogg",
             "clean_text": clean_text_str,
             "speakers_involved": list(set([t["speaker"] for t in formatted_transcript])),

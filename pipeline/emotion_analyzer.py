@@ -81,6 +81,10 @@ def get_emotion_score(global_start, global_end, date_folder, root_path="/root/ta
     if not file_shifts:
         # If parsing failed, just use the first file and assume 0 shift
         file_shifts = [(0, ogg_files[0])]
+    else:
+        # Normalize shifts relative to the first file of the day
+        first_file_shift = file_shifts[0][0]
+        file_shifts = [(shift - first_file_shift, fpath) for shift, fpath in file_shifts]
 
     # Find the right file
     target_file = None
@@ -103,36 +107,89 @@ def get_emotion_score(global_start, global_end, date_folder, root_path="/root/ta
     print(f"[EMO] Глобальный {global_start}-{global_end} -> Локальный {local_start}-{local_end} в {os.path.basename(target_file)}")
     
     try:
-        # Cut audio
         waveform, sr = torchaudio.load(target_file)
-        start_idx = int(local_start * sr)
-        end_idx = int(local_end * sr)
+        if sr != 16000:
+            waveform = torchaudio.functional.resample(waveform, sr, 16000)
+            sr = 16000
+            
+        duration = local_end - local_start
+        chunk_size = 30.0
         
-        # Ensure bounds
-        start_idx = max(0, min(start_idx, waveform.shape[1] - 1))
-        end_idx = max(start_idx + 1, min(end_idx, waveform.shape[1]))
-        
-        audio_chunk = waveform[:, start_idx:end_idx]
-        
-        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        
-        sf.write(tmp_path, audio_chunk[0].numpy(), sr)
-        
-        # Очищаем кэш GPU перед инференсом чтобы избежать OOM на длинных сегментах
-        try:
-            import torch
-            if torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-        except Exception:
-            pass
+        if duration <= chunk_size:
+            start_idx = int(local_start * sr)
+            end_idx = int(local_end * sr)
+            
+            start_idx = max(0, min(start_idx, waveform.shape[1] - 1))
+            end_idx = max(start_idx + 1, min(end_idx, waveform.shape[1]))
+            
+            audio_chunk = waveform[:, start_idx:end_idx]
+            
+            fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            
+            sf.write(tmp_path, audio_chunk[0].numpy(), sr)
+            
+            try:
+                import torch
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+            except Exception:
+                pass
 
-        # Get emotion (модель кэширована, не перезагружается)
-        model = _get_emo_model()
-        probs = model.get_probs(tmp_path)
-        
-        # Return both probs and the path to the cut audio (WAV)
-        return probs, tmp_path
+            model = _get_emo_model()
+            probs = model.get_probs(tmp_path)
+            return probs, tmp_path
+        else:
+            # Chunk the audio into 30-second segments
+            chunks = []
+            t = local_start
+            while t < local_end:
+                chunks.append((t, min(t + chunk_size, local_end)))
+                t += chunk_size
+                
+            all_probs = []
+            last_tmp_path = None
+            
+            for chunk_start, chunk_end in chunks:
+                chunk_start_idx = int(chunk_start * sr)
+                chunk_end_idx = int(chunk_end * sr)
+                
+                chunk_start_idx = max(0, min(chunk_start_idx, waveform.shape[1] - 1))
+                chunk_end_idx = max(chunk_start_idx + 1, min(chunk_end_idx, waveform.shape[1]))
+                
+                audio_chunk = waveform[:, chunk_start_idx:chunk_end_idx]
+                
+                fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
+                
+                sf.write(tmp_path, audio_chunk[0].numpy(), sr)
+                
+                try:
+                    import torch
+                    if torch.backends.mps.is_available():
+                        torch.mps.empty_cache()
+                except Exception:
+                    pass
+                    
+                model = _get_emo_model()
+                probs = model.get_probs(tmp_path)
+                all_probs.append(probs)
+                
+                if last_tmp_path and os.path.exists(last_tmp_path):
+                    try:
+                        os.remove(last_tmp_path)
+                    except Exception:
+                        pass
+                last_tmp_path = tmp_path
+                
+            combined_probs = {"angry": 0.0, "neutral": 0.0, "positive": 0.0, "sad": 0.0}
+            if all_probs:
+                combined_probs["angry"] = max(p.get("angry", 0.0) for p in all_probs)
+                combined_probs["sad"] = max(p.get("sad", 0.0) for p in all_probs)
+                combined_probs["neutral"] = sum(p.get("neutral", 0.0) for p in all_probs) / len(all_probs)
+                combined_probs["positive"] = sum(p.get("positive", 0.0) for p in all_probs) / len(all_probs)
+                
+            return combined_probs, last_tmp_path
 
 
         

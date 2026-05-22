@@ -94,7 +94,12 @@ def run_qa_on_batch(dialog_texts, start_index, date_folder, shop_id, audio_paths
             {"role": "user", "content": user_content}
         ],
         "max_tokens": 8000,
-        "response_format": {"type": "json_object"}
+        "response_format": {"type": "json_object"},
+        "extra_body": {
+            "thinking": {
+                "type": "disabled"
+            }
+        }
     }
     
     batch_label = f"#{start_index}" if len(dialog_texts) == 1 else f"#{start_index}-{start_index + len(dialog_texts) - 1}"
@@ -111,6 +116,9 @@ def run_qa_on_batch(dialog_texts, start_index, date_folder, shop_id, audio_paths
                 parsed = json.loads(json_str)
                 if "dialogues" not in parsed:
                     parsed = {"dialogues": [parsed]}
+                
+                for i, d in enumerate(parsed["dialogues"]):
+                    d["dialog_index"] = start_index + i
                 
                 tmp_json = f"FINAL_AUDIT_REPORT_{start_index}.json"
                 with open(tmp_json, "w", encoding="utf-8") as f:
@@ -160,7 +168,18 @@ def run_cache_iterator(canvas_file, date_folder, shop_id, root_path="."):
         return
 
     with open(canvas_file, 'r', encoding='utf-8') as f:
-        daily_transcript = f.read()
+        canvas_lines = f.readlines()
+        
+    # Парсим таймкоды для каждой строки транскрипта
+    parsed_canvas = []
+    for line in canvas_lines:
+        match = re.match(r'\[(\d+)\s*-\s*(\d+)\]', line.strip())
+        if match:
+            parsed_canvas.append({
+                "start": int(match.group(1)),
+                "end": int(match.group(2)),
+                "text": line.strip()
+            })
         
     iterator_p = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'docs', 'iterator_prompt.md')
     with open(iterator_p, 'r', encoding='utf-8') as f:
@@ -170,8 +189,24 @@ def run_cache_iterator(canvas_file, date_folder, shop_id, root_path="."):
     if os.path.exists(glossary_path):
         with open(glossary_path, 'r', encoding='utf-8') as f:
             base_prompt += "\n\nГЛОССАРИЙ:\n" + f.read()
+            
+    def get_window(after_second, size=20000):
+        window_lines = []
+        total_chars = 0
+        found_start = False
         
-    sys_content = base_prompt + "\n\n=== ТРАНСКРИПТ КОФЕЙНИ ===\n\n" + daily_transcript
+        for entry in parsed_canvas:
+            if entry["start"] >= after_second:
+                found_start = True
+            if found_start:
+                window_lines.append(entry["text"])
+                total_chars += len(entry["text"]) + 1
+                if total_chars >= size:
+                    break
+        
+        if not window_lines:
+            return None, True
+        return "\n".join(window_lines), False
     
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {API_KEY}'}
     
@@ -179,19 +214,30 @@ def run_cache_iterator(canvas_file, date_folder, shop_id, root_path="."):
     dialog_idx = 1
     qa_buffer = []  # Buffer for batch QA (texts)
     audio_buffer = [] # Buffer for batch QA (audio paths)
+    WINDOW_SIZE = 20000
     
-    print("\n[ITERATOR] Запуск разбора дня...")
+    print("\n[ITERATOR] Запуск разбора дня с использованием скользящего окна...")
     
     while True:
+        # Проверяем выход за границы
+        if parsed_canvas and last_second > parsed_canvas[-1]["end"]:
+            print("[ITERATOR] Достигнут конец транскрипта.")
+            break
+            
+        window_text, is_end = get_window(last_second, size=WINDOW_SIZE)
+        if is_end or not window_text:
+            print("[ITERATOR] Достигнут конец транскрипта (окно пустое).")
+            break
+            
         if last_second == 0:
-            prompt = "Найди первый диалог заказа (или конфликт/дозаказ). Выдай только его отредактированный чистый текст с таймкодами."
+            prompt = f"=== ФРАГМЕНТ ТРАНСКРИПТА КОФЕЙНИ ===\n{window_text}\n\nНайди первый диалог заказа (или конфликт/дозаказ) в этом фрагменте. Выдай только его отредактированный чистый текст с таймкодами."
         else:
-            prompt = f"Найди следующий диалог заказа, который начался СТРОГО ПОСЛЕ {last_second} секунды. Выдай только его текст."
+            prompt = f"=== ФРАГМЕНТ ТРАНСКРИПТА КОФЕЙНИ ===\n{window_text}\n\nНайди следующий диалог заказа в этом фрагменте, который начался СТРОГО ПОСЛЕ {last_second} секунды. Выдай только его текст."
             
         payload = {
             "model": "deepseek-reasoner",
             "messages": [
-                {"role": "system", "content": sys_content},
+                {"role": "system", "content": base_prompt},
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 8000
