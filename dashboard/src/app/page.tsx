@@ -4,8 +4,9 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { supabase, Shop, DialogScore, AppStatus, AgentTelemetry } from "@/lib/supabase";
 import { 
-  ShieldCheck, Clock, Volume2, PlayCircle, PauseCircle, 
-  ChevronLeft, AlertTriangle, TrendingUp, Star, Calendar 
+  Clock, Volume2, PlayCircle, PauseCircle, 
+  ChevronLeft, AlertTriangle, TrendingUp, Star, Calendar,
+  Cpu, Activity, HardDrive, Thermometer, ArrowRight
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
@@ -14,10 +15,7 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useTheme } from "next-themes";
 
-// Global Styles for branding and scrollbars
-const fontImport = `
-  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
-`;
+// Font is imported in globals.css
 
 // Helper: returns YYYY-MM-DD in LOCAL timezone (not UTC)
 function getLocalDateStr(d: Date = new Date()): string {
@@ -25,6 +23,21 @@ function getLocalDateStr(d: Date = new Date()): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function getDialogWord(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod100 >= 11 && mod100 <= 19) {
+    return "диалогов";
+  }
+  if (mod10 === 1) {
+    return "диалог";
+  }
+  if (mod10 >= 2 && mod10 <= 4) {
+    return "диалога";
+  }
+  return "диалогов";
 }
 
 export default function Dashboard() {
@@ -48,19 +61,87 @@ export default function Dashboard() {
   const [activePhraseIndex, setActivePhraseIndex] = useState<number | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<'week' | 'month'>('week');
+  const [clockSkew, setClockSkew] = useState<number>(0);
+  const [timerTick, setTimerTick] = useState<number>(0);
   
   const playTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStartTimeRef = useRef<number | null>(null);
   const mobileDateInputRef = useRef<HTMLInputElement | null>(null);
+  const dateInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Drag-to-scroll for date selector
+  const dateScrollRef = useRef<HTMLDivElement | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const isDragActive = useRef(false);
   
   useEffect(() => {
     setIsMounted(true);
+    
+    // Fetch clock skew to handle client-to-server clock desynchronization
+    fetch('/api/server-time')
+      .then(res => res.json())
+      .then(data => {
+        const skew = data.serverTime - Date.now();
+        setClockSkew(skew);
+      })
+      .catch(err => console.error("Error fetching server time:", err));
+
     return () => {
       if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current);
     };
   }, []);
+
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Drag-to-scroll handlers
+  const handleDateScrollMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!dateScrollRef.current) return;
+    
+    const slider = dateScrollRef.current;
+    const startX = e.pageX - slider.offsetLeft;
+    const scrollLeft = slider.scrollLeft;
+    isDragActive.current = false;
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+
+    const handleMouseMove = (walkEvent: MouseEvent) => {
+      if (!slider) return;
+      const x = walkEvent.pageX - slider.offsetLeft;
+      const moveX = Math.abs(walkEvent.clientX - startMouseX);
+      const moveY = Math.abs(walkEvent.clientY - startMouseY);
+      
+      if (moveX > 5 || moveY > 5) {
+        isDragActive.current = true;
+        setIsDragging(true);
+      }
+      
+      if (isDragActive.current) {
+        walkEvent.preventDefault();
+        const walk = (x - startX) * 1.5;
+        slider.scrollLeft = scrollLeft - walk;
+      }
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      setTimeout(() => {
+        setIsDragging(false);
+      }, 50);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleDateClick = (dateStr: string) => {
+    if (isDragActive.current) return;
+    setSelectedDate(dateStr);
+    setView('dashboard');
+  };
 
   // 1. Core Functions
   const togglePlay = () => {
@@ -83,9 +164,15 @@ export default function Dashboard() {
     if (audioRef.current && activeDialog?.transcript) {
       const time = audioRef.current.currentTime;
       setCurrentTime(time);
+      
+      const dur = audioRef.current.duration;
+      const startOffset = activeDialog.transcript.length > 0 ? activeDialog.transcript[0].start : 0;
+      const isCropped = dur && !isNaN(dur) && dur < startOffset;
+      const absoluteTime = isCropped ? time + startOffset : time;
+
       let index = -1;
       for (let i = 0; i < activeDialog.transcript.length; i++) {
-        if (time >= activeDialog.transcript[i].start) {
+        if (absoluteTime >= activeDialog.transcript[i].start) {
           index = i;
         } else {
           break;
@@ -98,11 +185,17 @@ export default function Dashboard() {
   };
 
   const handleLoadedMetadata = () => {
-    if (audioRef.current) {
-      setDuration(audioRef.current.duration);
+    if (audioRef.current && activeDialog) {
+      const dur = audioRef.current.duration;
+      setDuration(dur);
       if (pendingStartTimeRef.current !== null) {
         if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current);
-        audioRef.current.currentTime = pendingStartTimeRef.current;
+        
+        const startOffset = activeDialog.transcript && activeDialog.transcript.length > 0 ? activeDialog.transcript[0].start : 0;
+        const isCropped = dur && !isNaN(dur) && dur < startOffset;
+        const seekTime = isCropped ? (pendingStartTimeRef.current >= startOffset ? pendingStartTimeRef.current - startOffset : pendingStartTimeRef.current) : pendingStartTimeRef.current;
+
+        audioRef.current.currentTime = seekTime;
         audioRef.current.play()
           .then(() => setIsPlaying(true))
           .catch((err) => {
@@ -119,6 +212,9 @@ export default function Dashboard() {
       if (playTimeoutRef.current) {
         clearTimeout(playTimeoutRef.current);
       }
+      
+      const startOffset = dialog.transcript && dialog.transcript.length > 0 ? dialog.transcript[0].start : 0;
+
       if (activeDialog?.id !== dialog.id) {
         setActiveDialog(dialog);
         setActivePhraseIndex(null);
@@ -126,7 +222,11 @@ export default function Dashboard() {
         // Fallback timeout in case onLoadedMetadata doesn't fire
         playTimeoutRef.current = setTimeout(() => {
           if (audioRef.current && dialog.audio_url && pendingStartTimeRef.current !== null) {
-            audioRef.current.currentTime = pendingStartTimeRef.current;
+            const dur = audioRef.current.duration;
+            const isCropped = dur && !isNaN(dur) && dur < startOffset;
+            const seekTime = isCropped ? (pendingStartTimeRef.current >= startOffset ? pendingStartTimeRef.current - startOffset : pendingStartTimeRef.current) : pendingStartTimeRef.current;
+
+            audioRef.current.currentTime = seekTime;
             audioRef.current.play()
               .then(() => setIsPlaying(true))
               .catch((err) => {
@@ -138,7 +238,11 @@ export default function Dashboard() {
         }, 800);
       } else if (audioRef.current && dialog.audio_url) {
         pendingStartTimeRef.current = null;
-        audioRef.current.currentTime = startTime;
+        const dur = audioRef.current.duration;
+        const isCropped = dur && !isNaN(dur) && dur < startOffset;
+        const seekTime = isCropped ? (startTime >= startOffset ? startTime - startOffset : startTime) : startTime;
+
+        audioRef.current.currentTime = seekTime;
         audioRef.current.play()
           .then(() => setIsPlaying(true))
           .catch((err) => {
@@ -159,6 +263,15 @@ export default function Dashboard() {
       });
     }
   }, [activePhraseIndex]);
+
+  const formatAbsoluteTime = (time: number) => {
+    if (typeof time !== 'number' || isNaN(time) || !isFinite(time)) return "00:00:00";
+    const absoluteSeconds = time + 28800;
+    const hours = Math.floor(absoluteSeconds / 3600);
+    const mins = Math.floor((absoluteSeconds % 3600) / 60);
+    const secs = Math.floor(absoluteSeconds % 60);
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const formatTime = (time: number) => {
     if (typeof time !== 'number' || isNaN(time) || !isFinite(time)) return "0:00";
@@ -279,6 +392,15 @@ export default function Dashboard() {
     };
   }, [loadData]);
 
+  // Periodically force recheck of online status
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTimerTick(prev => prev + 1);
+      loadData(true); // Poll database silently every 5 seconds as a fallback
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
   // 3. Computed Analytics
   const getDialogPercent = (dialog: DialogScore) => {
     const details = dialog.audit_details;
@@ -304,8 +426,9 @@ export default function Dashboard() {
   }, [allDialogs, selectedDate]);
 
   const networkTrend = useMemo(() => {
+    const periodDays = analyticsPeriod === 'week' ? 7 : 30;
     const dates: Record<string, { date: string, score: number, count: number }> = {};
-    for (let i = 6; i >= 0; i--) {
+    for (let i = periodDays - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const s = getLocalDateStr(d);
@@ -324,34 +447,143 @@ export default function Dashboard() {
       name: v.date,
       Оценка: v.count > 0 ? Math.round(v.score / v.count) : 0
     }));
-  }, [allDialogs]);
+  }, [allDialogs, analyticsPeriod]);
 
-  const networkPerformance = useMemo(() => {
-    const stats: Record<string, { total: number, count: number }> = {
-      'cross_sales_score': { total: 0, count: 0 },
-      'upsell_score': { total: 0, count: 0 },
-      'christmas_tree_score': { total: 0, count: 0 },
-      'promo_score': { total: 0, count: 0 },
-      'loyalty_score': { total: 0, count: 0 },
-      'order_duplication_score': { total: 0, count: 0 }
-    };
-    filteredDialogs.forEach(d => {
+  const dailyMetricsAverages = useMemo(() => {
+    const dialogsForDate = filteredDialogs.filter(d => d.audit_details && d.audit_details.dialogue_type !== 'dialog');
+    if (dialogsForDate.length === 0) {
+      return {
+        upsell: 0,
+        crossSell: 0,
+        christmasTree: 0,
+        loyalty: 0,
+        orderDuplication: 0,
+      };
+    }
+    
+    let sumUpsell = 0;
+    let sumCross = 0;
+    let sumChristmas = 0;
+    let sumLoyalty = 0;
+    let sumDuplication = 0;
+    
+    dialogsForDate.forEach(d => {
       const details = d.audit_details;
       if (details) {
-        Object.entries(details).forEach(([key, val]) => {
-          if (key in stats && typeof val === 'number') {
-            stats[key].total += val;
-            stats[key].count += 1;
-          }
-        });
+        sumUpsell += details.upsell_score || 0;
+        sumCross += details.cross_sales_score || 0;
+        sumChristmas += details.christmas_tree_score || 0;
+        sumLoyalty += details.loyalty_score || 0;
+        sumDuplication += details.order_duplication_score || 0;
       }
     });
-    return Object.entries(stats).map(([key, val]) => ({
-      key,
-      name: translateTag(key),
-      percent: val.count > 0 ? Math.round(val.total / val.count) : 0
-    })).sort((a, b) => a.percent - b.percent);
+    
+    const count = dialogsForDate.length;
+    return {
+      upsell: Math.round(sumUpsell / count),
+      crossSell: Math.round(sumCross / count),
+      christmasTree: Math.round(sumChristmas / count),
+      loyalty: Math.round(sumLoyalty / count),
+      orderDuplication: Math.round(sumDuplication / count),
+    };
   }, [filteredDialogs]);
+
+  const metricTrends = useMemo(() => {
+    const currentDate = new Date(selectedDate);
+    const prevDate = new Date(currentDate);
+    prevDate.setDate(prevDate.getDate() - 1);
+    const prevDateStr = getLocalDateStr(prevDate);
+
+    const prevDialogs = allDialogs.filter(d => d.created_at?.startsWith(prevDateStr) && d.audit_details && d.audit_details.dialogue_type !== 'dialog');
+
+    let prevUpsell = 0;
+    let prevCross = 0;
+    let prevChristmas = 0;
+    let prevLoyalty = 0;
+    let prevDuplication = 0;
+
+    if (prevDialogs.length > 0) {
+      let sumUpsell = 0;
+      let sumCross = 0;
+      let sumChristmas = 0;
+      let sumLoyalty = 0;
+      let sumDuplication = 0;
+      prevDialogs.forEach(d => {
+        const details = d.audit_details;
+        if (details) {
+          sumUpsell += details.upsell_score || 0;
+          sumCross += details.cross_sales_score || 0;
+          sumChristmas += details.christmas_tree_score || 0;
+          sumLoyalty += details.loyalty_score || 0;
+          sumDuplication += details.order_duplication_score || 0;
+        }
+      });
+      const count = prevDialogs.length;
+      prevUpsell = Math.round(sumUpsell / count);
+      prevCross = Math.round(sumCross / count);
+      prevChristmas = Math.round(sumChristmas / count);
+      prevLoyalty = Math.round(sumLoyalty / count);
+      prevDuplication = Math.round(sumDuplication / count);
+    } else {
+      const allAudited = allDialogs.filter(d => d.audit_details && d.audit_details.dialogue_type !== 'dialog');
+      if (allAudited.length > 0) {
+        let sumUpsell = 0;
+        let sumCross = 0;
+        let sumChristmas = 0;
+        let sumLoyalty = 0;
+        let sumDuplication = 0;
+        allAudited.forEach(d => {
+          const details = d.audit_details;
+          if (details) {
+            sumUpsell += details.upsell_score || 0;
+            sumCross += details.cross_sales_score || 0;
+            sumChristmas += details.christmas_tree_score || 0;
+            sumLoyalty += details.loyalty_score || 0;
+            sumDuplication += details.order_duplication_score || 0;
+          }
+        });
+        const count = allAudited.length;
+        prevUpsell = Math.round(sumUpsell / count);
+        prevCross = Math.round(sumCross / count);
+        prevChristmas = Math.round(sumChristmas / count);
+        prevLoyalty = Math.round(sumLoyalty / count);
+        prevDuplication = Math.round(sumDuplication / count);
+      }
+    }
+
+    return {
+      upsellUp: dailyMetricsAverages.upsell >= prevUpsell,
+      crossSellUp: dailyMetricsAverages.crossSell >= prevCross,
+      christmasTreeUp: dailyMetricsAverages.christmasTree >= prevChristmas,
+      loyaltyUp: dailyMetricsAverages.loyalty >= prevLoyalty,
+      orderDuplicationUp: dailyMetricsAverages.orderDuplication >= prevDuplication
+    };
+  }, [allDialogs, selectedDate, dailyMetricsAverages]);
+
+  const sparklineTrends = useMemo(() => {
+    const periodDays = analyticsPeriod === 'week' ? 7 : 30;
+    const dates: Record<string, { upsellSum: number, crossSum: number, count: number }> = {};
+    for (let i = periodDays - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const s = getLocalDateStr(d);
+      dates[s] = { upsellSum: 0, crossSum: 0, count: 0 };
+    }
+    allDialogs.forEach(d => {
+      if (!d.created_at || !d.audit_details || d.audit_details.dialogue_type === 'dialog') return;
+      const s = d.created_at.split('T')[0];
+      if (dates[s]) {
+        dates[s].upsellSum += d.audit_details.upsell_score || 0;
+        dates[s].crossSum += d.audit_details.cross_sales_score || 0;
+        dates[s].count += 1;
+      }
+    });
+    return Object.entries(dates).map(([dateStr, v]) => ({
+      date: dateStr,
+      upsell: v.count > 0 ? Math.round(v.upsellSum / v.count) : 0,
+      crosssell: v.count > 0 ? Math.round(v.crossSum / v.count) : 0
+    })).sort((a, b) => a.date.localeCompare(b.date));
+  }, [allDialogs, analyticsPeriod]);
 
   const shopSummaries = useMemo(() => {
     return shops
@@ -503,543 +735,969 @@ export default function Dashboard() {
 
   const selectedShopSummary = shopSummaries.find(s => s.id === selectedShopId);
 
+  // Determine active content view
+  const activeView = selectedShopId ? 'shopDetail' : view;
+
+  // Reset window scroll when active view changes (e.g. navigating to Shop Detail or different tabs)
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    const handle = requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [activeView]);
+
   // 4. Render Logic
   if (!isMounted) return null;
   
   if (loading && shops.length === 0) {
     return (
-      <main className="min-h-screen bg-black text-zinc-900 dark:text-white flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-zinc-900 border-t-white rounded-full animate-spin"></div>
+      <main className="min-h-screen bg-[#F5F5F7] dark:bg-black text-[#1D1D1F] dark:text-[#F5F5F7] flex items-center justify-center">
+        <div className="w-10 h-10 border-4 border-[#007AFF] border-t-transparent rounded-full animate-spin"></div>
       </main>
     );
   }
 
+  // --- SVG Score Ring helper ---
+  const ScoreRing = ({ percent, size = 80, strokeWidth = 6, color = "#007AFF" }: { percent: number; size?: number; strokeWidth?: number; color?: string }) => {
+    const radius = (size - strokeWidth) / 2;
+    const circumference = 2 * Math.PI * radius;
+    const offset = circumference - (percent / 100) * circumference;
+    return (
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)"} strokeWidth={strokeWidth} />
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} className="transition-all duration-700 ease-out" />
+      </svg>
+    );
+  };
+
+  // Nav items config
+  const navItems = [
+    { id: 'dashboard', label: 'Дашборд', icon: <TrendingUp size={18} /> },
+    { id: 'analytics', label: 'Аналитика', icon: <Star size={18} /> },
+    { id: 'admin', label: 'Офис', icon: <Cpu size={18} /> },
+  ];
+
   return (
-    <main className="min-h-screen bg-zinc-50 dark:bg-[#050505] text-zinc-900 dark:text-white pb-32 font-sans selection:bg-black/10 dark:selection:bg-white/20 antialiased overflow-x-hidden transition-colors duration-300">
-      <div className="fixed inset-0 bg-[radial-gradient(circle_at_top_right,_#101524_0%,_transparent_40%)] pointer-events-none opacity-20 dark:opacity-50"></div>
-      <div className="fixed inset-0 bg-[radial-gradient(circle_at_bottom_left,_#0a1510_0%,_transparent_40%)] pointer-events-none opacity-10 dark:opacity-30"></div>
+    <main className="min-h-screen bg-[#F5F5F7] dark:bg-black text-[#1D1D1F] dark:text-[#F5F5F7] font-sans antialiased transition-colors duration-300">
       
-      <div className="max-w-6xl mx-auto px-6 pt-12 relative z-10">
-                    <header className="mb-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 pb-10 relative">
-               <div className="flex items-center gap-4 relative z-20">
-                  <style dangerouslySetInnerHTML={{ __html: fontImport }} />
-                  <div className="text-4xl tracking-tighter flex items-center gap-1 select-none" id="logo-dashboard-view">
-                    <span className="font-sans font-medium text-zinc-500">talk:</span>
-                    <span className="font-mono font-black text-zinc-900 dark:text-white tracking-[0.15em] bg-black/5 dark:bg-white/5 px-3 py-1 rounded-lg border border-black/10 dark:border-white/10 text-2xl shadow-[0_0_20px_rgba(255,255,255,0.05)]">core</span>
-                  </div>
-               </div>
-               
-               {/* Mobile Action Bar */}
-               <div className="flex md:hidden items-center gap-2 relative z-20">
-                  {selectedShopId && (
-                    <button onClick={() => setSelectedShopId(null)} className="p-2 border border-black/5 dark:border-white/5 rounded-lg active:scale-95 transition-transform"><ChevronLeft size={20}/></button>
-                  )}
-                  {!selectedShopId && (
+      {/* ===================== MOBILE HEADER ===================== */}
+      <header className="md:hidden fixed top-0 left-0 right-0 z-40 bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-xl border-b border-black/[0.06] dark:border-white/[0.08]">
+        <div className="flex items-center justify-between px-4 h-14">
+          <div className="flex items-center gap-3">
+            {selectedShopId && (
+              <button onClick={() => setSelectedShopId(null)} className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
+                <ChevronLeft size={20} />
+              </button>
+            )}
+            <div className="text-lg flex items-center gap-1 select-none">
+              <span className="font-semibold text-[#86868B]">talk</span>
+              <span className="font-bold">sensor</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <button onClick={() => mobileDateInputRef.current?.showPicker()} className="flex items-center justify-center bg-white dark:bg-[#2C2C2E] border border-black/[0.06] dark:border-white/[0.08] rounded-xl w-9 h-9">
+                <Calendar size={16} className="text-[#86868B]" />
+              </button>
+              <input 
+                ref={mobileDateInputRef}
+                type="date" 
+                value={selectedDate}
+                onChange={(e) => { setSelectedDate(e.target.value); setView('dashboard'); }}
+                className="absolute opacity-0 w-0 h-0"
+              />
+            </div>
+            <ThemeToggle />
+          </div>
+        </div>
+      </header>
+
+      {/* ===================== MOBILE BOTTOM TAB BAR ===================== */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-xl border-t border-black/[0.06] dark:border-white/[0.08] safe-area-bottom">
+        <div className="flex items-center justify-around h-16 px-2">
+          {navItems.map(item => {
+            const isActive = view === item.id && !selectedShopId;
+            return (
+              <button
+                key={item.id}
+                onClick={() => { setView(item.id); setSelectedShopId(null); }}
+                className={`flex flex-col items-center justify-center gap-0.5 w-16 py-1 rounded-xl transition-colors ${
+                  isActive 
+                    ? 'text-[#007AFF]' 
+                    : 'text-[#86868B] active:text-[#1D1D1F] dark:active:text-[#F5F5F7]'
+                }`}
+              >
+                {item.icon}
+                <span className="text-[10px] font-semibold">{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      <div className="min-h-screen">
+        {/* ===================== DESKTOP SIDEBAR ===================== */}
+        <aside className="hidden md:flex flex-col w-64 fixed left-0 top-0 bottom-0 bg-white dark:bg-[#1C1C1E] border-r border-black/[0.06] dark:border-white/[0.08] z-30">
+          
+          {/* Logo */}
+          <div className="px-6 pt-8 pb-6">
+            <div className="text-xl flex items-center gap-1 select-none">
+              <span className="font-semibold text-[#86868B]">talk</span>
+              <span className="font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">sensor</span>
+            </div>
+            <p className="text-xs text-[#86868B] mt-1">Аудит качества сервиса</p>
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex-1 px-3 space-y-1">
+            {navItems.map(item => (
+              <button
+                key={item.id}
+                onClick={() => { setView(item.id); setSelectedShopId(null); }}
+                className={`flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
+                  (view === item.id && !selectedShopId)
+                    ? 'bg-[#007AFF]/10 text-[#007AFF]'
+                    : 'text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.03] dark:hover:bg-white/[0.03]'
+                }`}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
+
+            {selectedShopId && (
+              <button 
+                onClick={() => setSelectedShopId(null)}
+                className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-sm font-medium text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-all"
+              >
+                <ChevronLeft size={18} />
+                Назад к сети
+              </button>
+            )}
+          </nav>
+
+          {/* Sidebar bottom */}
+          <div className="px-4 pb-6 space-y-4">
+            {/* Theme toggle */}
+            <div className="flex items-center justify-between px-2">
+              <span className="text-xs font-medium text-[#86868B]">Тема</span>
+              <ThemeToggle />
+            </div>
+
+            {/* Status bar */}
+            <div className="bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-xl p-3 space-y-2">
+              {(() => {
+                const macMiniData = telemetry.find(t => t.agent_name === 'mac_mini_telemetry');
+                const adjustedNow = Date.now() + clockSkew;
+                const isServerOnline = (macMiniData && macMiniData.updated_at) 
+                  ? (Math.abs(adjustedNow - new Date(macMiniData.updated_at).getTime()) < 35000) 
+                  : false;
+
+                if (!isServerOnline) {
+                  return (
                     <>
-                       {/* Compact Date Picker for Mobile */}
-                       <div className="relative">
-                          <button onClick={() => mobileDateInputRef.current?.showPicker()} className="flex items-center justify-center bg-zinc-100 dark:bg-zinc-900 border border-black/5 dark:border-white/5 rounded-lg w-10 h-10">
-                            <Calendar size={18} className="text-zinc-600 dark:text-zinc-400" />
-                          </button>
-                          <input 
-                            ref={mobileDateInputRef}
-                            type="date" 
-                            value={selectedDate}
-                            onChange={(e) => { setSelectedDate(e.target.value); setView('dashboard'); }}
-                            className="absolute opacity-0 w-0 h-0"
-                          />
-                       </div>
-                       
-                       <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="flex items-center justify-center bg-zinc-100 dark:bg-zinc-900 border border-black/5 dark:border-white/5 rounded-lg w-10 h-10">
-                          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-900 dark:text-white"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                       </button>
-                    </>
-                  )}
-               </div>
-
-               {/* Desktop Nav */}
-               <div className="hidden md:flex items-center gap-6">
-                  <div className="flex items-center gap-6">
-                     <div className="flex bg-zinc-100 dark:bg-[#0c0d12] p-1 rounded-xl border border-black/5 dark:border-white/5">
-                        <button 
-                          onClick={() => { setView('dashboard'); setSelectedShopId(null); }}
-                          className={`px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${(view === 'dashboard' && !selectedShopId) ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
-                        >
-                          Дашборд
-                        </button>
-                        <button 
-                          onClick={() => { setView('analytics'); setSelectedShopId(null); }}
-                          className={`px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${(view === 'analytics' && !selectedShopId) ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
-                        >
-                          Отчет
-                        </button>
-                        <button 
-                          onClick={() => { setView('admin'); setSelectedShopId(null); }}
-                          className={`px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${(view === 'admin' && !selectedShopId) ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
-                        >
-                          Офис
-                        </button>
-                       </div>
-
-                       <div className="w-px h-6 bg-black/5 dark:bg-white/5"></div>
-                       <ThemeToggle />
-                       <div className="w-px h-6 bg-black/5 dark:bg-white/5"></div>
-
-                       <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest whitespace-nowrap">
-                          <Calendar size={12} /> Архив
-                       </div>
-                       <div className="relative flex items-center">
-                          <input 
-                            type="date" 
-                            value={selectedDate}
-                            onClick={(e) => e.currentTarget.showPicker()}
-                            onChange={(e) => { setSelectedDate(e.target.value); setView('dashboard'); }}
-                            className="bg-white dark:bg-[#0c0d12] border border-black/5 dark:border-white/5 rounded-xl px-4 py-2 flex items-center text-[11px] font-bold uppercase text-zinc-600 dark:text-zinc-400 focus:outline-none [color-scheme:light] dark:[color-scheme:dark] cursor-pointer"
-                          />
-                       </div>
-                     </div>
-
-                     {selectedShopId && (
-                        <button 
-                          onClick={() => setSelectedShopId(null)}
-                          className="flex items-center gap-2 bg-zinc-100 dark:bg-zinc-900 hover:bg-zinc-200 dark:hover:bg-zinc-800 px-5 py-3 rounded-xl border border-black/5 dark:border-white/10 transition-all text-xs font-bold uppercase tracking-widest text-zinc-900 dark:text-white group shadow-sm"
-                        >
-                          <ChevronLeft size={16} className="group-hover:-translate-x-1 transition-transform" /> Назад
-                        </button>
-                     )}
-               </div>
-               
-               {/* Dropdown Mobile Menu */}
-               {isMobileMenuOpen && !selectedShopId && (
-                  <div className="absolute top-full left-0 right-0 mt-4 bg-white dark:bg-zinc-900 border border-black/10 dark:border-white/10 rounded-2xl p-4 shadow-2xl z-50 flex flex-col md:hidden animate-in fade-in slide-in-from-top-4">
-                     <div className="flex flex-col gap-2 mb-4">
-                       <button onClick={() => {setView('dashboard'); setIsMobileMenuOpen(false);}} className={`text-left px-4 py-3 rounded-xl font-bold ${view === 'dashboard' ? 'bg-zinc-100 dark:bg-black/20 text-black dark:text-white' : 'text-zinc-600 dark:text-zinc-400'}`}>Дашборд</button>
-                       <button onClick={() => {setView('analytics'); setIsMobileMenuOpen(false);}} className={`text-left px-4 py-3 rounded-xl font-bold ${view === 'analytics' ? 'bg-zinc-100 dark:bg-black/20 text-black dark:text-white' : 'text-zinc-600 dark:text-zinc-400'}`}>Отчет за месяц</button>
-                       <button onClick={() => {setView('admin'); setIsMobileMenuOpen(false);}} className={`text-left px-4 py-3 rounded-xl font-bold ${view === 'admin' ? 'bg-zinc-100 dark:bg-black/20 text-black dark:text-white' : 'text-zinc-600 dark:text-zinc-400'}`}>Офис</button>
-                     </div>
-                     <div className="w-full h-px bg-black/5 dark:bg-white/5 my-2"></div>
-                     <div className="flex items-center justify-between p-2">
-                        <span className="font-bold text-sm text-zinc-600 dark:text-white">Смена темы</span>
-                        <ThemeToggle />
-                     </div>
-                  </div>
-               )}
-            </header>
-
-            {view === 'admin' ? (
-              <div className="space-y-12 animate-in fade-in slide-in-from-bottom-10 duration-700">
-                <div className="flex items-center justify-between">
-                   <h2 className="text-3xl font-black tracking-tighter flex items-center gap-3 text-zinc-900 dark:text-white">
-                      <ShieldCheck className="text-indigo-500 animate-pulse" /> Офис агентов (Служба оркестрации)
-                   </h2>
-                </div>
-              
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                   {/* OFFICE ZONE */}
-                   <div className="glass-card rounded-3xl p-8 relative overflow-hidden shadow-2xl flex flex-col border border-white/10">
-                      <div className="absolute inset-0 bg-grid-pattern opacity-10 pointer-events-none"></div>
-                      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-zinc-800 dark:text-white/70 mb-10 text-center relative z-10 border-b border-black/5 dark:border-white/10 pb-4">
-                         🏢 Секретный Офис (Work Zone)
-                      </h3>
-                      
-                      <div className="flex-1 grid grid-cols-2 gap-6 relative z-10">
-                         {/* Supervisor Desk (Always occupied by Boss) */}
-                         <div className="col-span-2 bg-gradient-to-r from-orange-500/20 via-orange-500/10 to-transparent border border-orange-500/30 rounded-2xl p-6 flex items-center justify-between relative overflow-hidden shadow-[0_0_20px_rgba(249,115,22,0.15)]">
-                            <div className="absolute -right-4 -top-4 w-24 h-24 bg-orange-500/20 rounded-full blur-2xl"></div>
-                            <div>
-                               <h4 className="text-orange-500 font-bold uppercase tracking-widest text-[9px] mb-1">Надзиратель</h4>
-                               <div className="text-zinc-900 dark:text-white font-black text-xl flex items-center gap-3">
-                                  <span className="text-3xl">🐢</span> Микеланджело
-                               </div>
-                            </div>
-                            <div className="bg-orange-500/10 dark:bg-black/40 px-4 py-2 rounded-lg border border-orange-500/20 text-xs font-mono text-orange-500 dark:text-orange-400 animate-pulse">
-                               СЛЕДИТ ЗА ПОРЯДКОМ
-                            </div>
-                         </div>
-
-                         {/* 3 Computers */}
-                         {[
-                            { name: "Audio Diarization Agent", role: "Диаризатор", turtle: "Леонардо", color: "blue", emoji: "🐢", mask: "from-blue-500/15 via-blue-500/5 to-transparent", border: "border-blue-500/30", glow: "rgba(59,130,246,0.15)", text: "text-blue-500" },
-                            { name: "Diarization Editor", role: "Редактор", turtle: "Донателло", color: "purple", emoji: "🐢", mask: "from-purple-500/15 via-purple-500/5 to-transparent", border: "border-purple-500/30", glow: "rgba(168,85,247,0.15)", text: "text-purple-500" },
-                            { name: "QA Analyst", role: "QA Аналитик", turtle: "Рафаэль", color: "red", emoji: "🐢", mask: "from-rose-500/15 via-rose-500/5 to-transparent", border: "border-rose-500/30", glow: "rgba(244,63,94,0.15)", text: "text-rose-500" }
-                         ].map((desk, idx) => {
-                            const agentIsBusy = telemetry.find(t => t.agent_name?.trim().toLowerCase() === desk.name.toLowerCase() && t.status?.trim().toUpperCase() === 'BUSY');
-                            
-                            return (
-                               <div key={idx} className={`relative flex flex-col items-center justify-center p-6 border rounded-2xl backdrop-blur-sm transition-all duration-500 ${agentIsBusy ? `bg-gradient-to-b ${desk.mask} ${desk.border} shadow-[0_0_20px_${desk.glow}]` : 'bg-black/5 dark:bg-black/40 border-black/10 dark:border-black/50 opacity-40 grayscale'}`}>
-                                  {agentIsBusy && <div className={`absolute -inset-2 bg-gradient-to-r ${desk.mask} rounded-3xl blur-2xl -z-10`}></div>}
-                                  
-                                  <div className="text-zinc-400 dark:text-zinc-600 mb-4">
-                                     <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-                                  </div>
-                                  
-                                  {agentIsBusy ? (
-                                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center animate-bounce">
-                                        <span className="text-4xl filter drop-shadow-lg">{desk.emoji}</span>
-                                        <span className={`text-[10px] font-black uppercase mt-2 px-2.5 py-1 bg-zinc-950/80 rounded border ${desk.border} text-white`}>{desk.turtle}</span>
-                                     </div>
-                                  ) : (
-                                     <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest">{desk.role}</span>
-                                  )}
-
-                                  {agentIsBusy && (
-                                     <div className="absolute -top-3 bg-zinc-900/90 border border-white/10 text-white text-[9px] px-3 py-1 rounded-full whitespace-nowrap overflow-hidden max-w-[90%] text-ellipsis font-mono">
-                                        {(agentIsBusy.active_task || "Анализ...").substring(0, 20)}...
-                                     </div>
-                                  )}
-                               </div>
-                            )
-                         })}
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-[#FF3B30]"></span>
+                        <span className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                          Сервер оффлайн
+                        </span>
                       </div>
-                   </div>
-              
-                   {/* CHILL ZONE */}
-                   <div className="glass-card rounded-3xl p-8 relative overflow-hidden shadow-inner flex flex-col border border-white/10">
-                      <div className="absolute inset-0 bg-grid-pattern opacity-5 pointer-events-none"></div>
-                      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-zinc-800 dark:text-white/70 mb-10 text-center relative z-10 border-b border-black/5 dark:border-white/10 pb-4">
-                         🍕 Чилл-Зона (Idle)
-                      </h3>
-                      
-                      <div className="flex-1 flex flex-col gap-4 relative z-10 p-6 bg-black/5 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5">
-                         {[
-                            { name: "Audio Diarization Agent", turtle: "Леонардо", emoji: "🐢", colorText: "text-blue-500 border-blue-500/20", bg: "bg-blue-500/5 dark:bg-blue-500/10" },
-                            { name: "Diarization Editor", turtle: "Донателло", emoji: "🐢", colorText: "text-purple-500 border-purple-500/20", bg: "bg-purple-500/5 dark:bg-purple-500/10" },
-                            { name: "QA Analyst", turtle: "Рафаэль", emoji: "🐢", colorText: "text-rose-500 border-rose-500/20", bg: "bg-rose-500/5 dark:bg-rose-500/10" }
-                         ].map((desk, idx) => {
-                            const isChilling = !telemetry.find(t => t.agent_name?.trim().toLowerCase() === desk.name.toLowerCase() && t.status?.trim().toUpperCase() === 'BUSY');
-                            if (!isChilling) return null;
+                      <p className="text-[10px] text-[#86868B] leading-tight">
+                        Хост Mac Mini не отвечает
+                      </p>
+                    </>
+                  );
+                }
 
-                            return (
-                               <div key={idx} className={`flex items-center gap-4 ${desk.bg} border-l-4 border-current ${desk.colorText} p-4 rounded-r-xl w-full hover:scale-[1.01] transition-all duration-300 cursor-default`}>
-                                  <div className="text-3xl relative">
-                                     {desk.emoji}
-                                     <span className="absolute -top-1 -right-2 text-xl animate-bounce">🍕</span>
+                const busyAgent = telemetry.find(t => {
+                  const isBusy = t.status?.trim().toUpperCase() === 'BUSY' && t.agent_name !== 'mac_mini_telemetry';
+                  return isBusy;
+                });
+                
+                const isAnalyzing = !!busyAgent || !!appStatus?.is_analyzing;
+                
+                let displayAgentName = busyAgent?.agent_name || '';
+                if (displayAgentName.toLowerCase() === 'audio diarization agent') displayAgentName = 'Транскрибатор';
+                else if (displayAgentName.toLowerCase() === 'diarization editor') displayAgentName = 'Аудитор';
+                else if (displayAgentName.toLowerCase() === 'qa analyst') displayAgentName = 'QA аналитик';
+
+                const statusMessage = busyAgent 
+                  ? (busyAgent.active_task || `Агент: ${displayAgentName}`) 
+                  : (appStatus?.status_message || 'Готов к работе');
+                
+                return (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${isAnalyzing ? 'bg-[#FF9500] animate-pulse' : 'bg-[#34C759]'}`}></span>
+                      <span className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                        {isAnalyzing ? 'Идёт анализ' : 'Система онлайн'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-[#86868B] leading-tight">
+                      {statusMessage}
+                    </p>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </aside>
+
+        {/* ===================== CONTENT AREA ===================== */}
+        <div className="md:ml-64 pt-16 md:pt-0 pb-28 md:pb-24 min-w-0">
+          <div className="w-full px-3 sm:px-4 md:px-6 py-4 md:py-6">
+
+            {/* ===================== VIEW: ADMIN ===================== */}
+            {activeView === 'admin' && (() => {
+              const macMiniData = telemetry.find(t => t.agent_name === 'mac_mini_telemetry');
+              const adjustedNow = Date.now() + clockSkew;
+              const isServerOnline = (macMiniData && macMiniData.updated_at) 
+                ? (Math.abs(adjustedNow - new Date(macMiniData.updated_at).getTime()) < 35000) 
+                : false;
+
+              let realMetrics = {
+                gpuLoad: 0,
+                gpuTemp: 0,
+                cpuLoad: 0,
+                ramUsage: 0,
+                latency: 0,
+                uptime: "—",
+                model: "M4"
+              };
+
+              if (isServerOnline && macMiniData?.active_task) {
+                try {
+                  realMetrics = JSON.parse(macMiniData.active_task);
+                } catch (e) {
+                  console.error("Error parsing mac mini telemetry:", e);
+                }
+              }
+
+              return (
+                <div className="space-y-8">
+                  {/* Header */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <h1 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">Офис (Mac Mini)</h1>
+                      <p className="text-sm text-[#86868B] mt-1">Визуальный конвейер обработки диалогов и состояние хоста</p>
+                    </div>
+                    <div className="flex items-center gap-2.5 bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] px-4 py-2 rounded-xl">
+                      <span className="relative flex h-2 w-2">
+                        {isServerOnline && (
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#34C759] opacity-75"></span>
+                        )}
+                        <span className={`relative inline-flex rounded-full h-2 w-2 ${isServerOnline ? 'bg-[#34C759]' : 'bg-[#FF3B30]'}`}></span>
+                      </span>
+                      <span className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                        {isServerOnline ? 'Сервер активен' : 'Сервер неактивен'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Pipeline Canvas */}
+                  <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-6 relative overflow-hidden">
+                    <div className="absolute -right-24 -top-24 w-64 h-64 bg-[#007AFF]/5 blur-[80px] rounded-full pointer-events-none"></div>
+                    
+                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-6 flex items-center gap-2">
+                      <Activity size={16} className="text-[#007AFF]" />
+                      Схема обработки диалогов
+                    </h3>
+
+                    <div className="flex flex-col lg:flex-row items-stretch justify-between gap-4 relative">
+                      {[
+                        { 
+                          name: "Транскрибатор", 
+                          step: "Шаг 1. Транскрибатор", 
+                          desc: "Транскрибация аудио в текст (GigaAM)", 
+                          color: "#007AFF" 
+                        },
+                        { 
+                          name: "Аудитор", 
+                          step: "Шаг 2. Аудитор", 
+                          desc: "Проверка качества диалога, выявление ошибок", 
+                          color: "#5856D6" 
+                        },
+                        { 
+                          name: "QA аналитик", 
+                          step: "Шаг 3. QA Аналитик", 
+                          desc: "Интеллектуальная оценка и скоринг (DeepSeek)", 
+                          color: "#FF9500" 
+                        }
+                      ].map((agent, idx) => {
+                        const agentData = telemetry.find(t => {
+                          const dbName = t.agent_name?.trim().toLowerCase();
+                          if (idx === 0) return dbName === 'транскрибатор' || dbName === 'audio diarization agent';
+                          if (idx === 1) return dbName === 'аудитор' || dbName === 'diarization editor';
+                          if (idx === 2) return dbName === 'qa аналитик' || dbName === 'qa analyst';
+                          return false;
+                        });
+
+                        const isBusy = isServerOnline && agentData?.status?.trim().toUpperCase() === 'BUSY';
+                        const lastActivityStr = agentData?.updated_at 
+                          ? new Date(agentData.updated_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) 
+                          : '—';
+
+                        const statusText = !isServerOnline ? 'Оффлайн' : isBusy ? 'В работе' : 'Ожидает';
+                        const dotColor = !isServerOnline ? 'bg-neutral-500/40' : isBusy ? 'bg-[#34C759] animate-pulse' : 'bg-[#86868B]/40';
+
+                        return (
+                          <div key={idx} className="flex-1 flex flex-col lg:flex-row items-center gap-4">
+                            {/* Card Block */}
+                            <div className="w-full bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-xl p-5 border border-black/[0.04] dark:border-white/[0.04] flex flex-col justify-between min-h-[160px] relative z-10 transition-all hover:scale-[1.01]">
+                              <div>
+                                <div className="flex items-center justify-between mb-3">
+                                  <span className="text-xs font-bold text-[#86868B]">{agent.step}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`w-2 h-2 rounded-full ${dotColor}`}></span>
+                                    <span className={`text-[11px] font-semibold ${!isServerOnline ? 'text-[#86868B]/60' : isBusy ? 'text-[#34C759]' : 'text-[#86868B]'}`}>
+                                      {statusText}
+                                    </span>
                                   </div>
-                                  <div>
-                                     <h4 className="font-black uppercase tracking-widest text-xs text-zinc-900 dark:text-white">{desk.turtle}</h4>
-                                     <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase mt-0.5">Ест пиццу / Ожидает задачи</p>
-                                  </div>
-                               </div>
-                            )
-                         })}
-                         
-                         {telemetry.filter(t => t.status?.trim().toUpperCase() === 'BUSY').length === 3 && (
-                             <div className="text-zinc-400 dark:text-zinc-500 text-sm italic py-10 text-center w-full">Чилл-зона пуста. Все ебашат!</div>
-                          )}
-                       </div>
-                    </div>
-                 </div>
-              </div>
-            ) : view === 'analytics' ? (
-              /* VIEW 3: Analytics View */
-              <div className="space-y-12 animate-in fade-in slide-in-from-bottom-10 duration-700">
-                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    {/* Month Summary Card */}
-                    <div className="bg-white dark:bg-[#0f1115]/80 border border-emerald-500/20 rounded-2xl p-10 flex flex-col justify-between shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-2xl relative overflow-hidden">
-                       <div className="absolute -right-20 -bottom-20 w-64 h-64 bg-emerald-500/10 blur-[100px] rounded-full pointer-events-none"></div>
-                       <div className="relative z-10">
-                          <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-500 mb-8 flex items-center gap-2">
-                            <TrendingUp size={14} /> Производительность сети
-                          </h3>
-                          <div className="text-7xl font-black italic tracking-tighter text-zinc-900 dark:text-white mb-2">
-                             {monthlyAnalytics.networkAvgPercentMonth}%
-                          </div>
-                          <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">за 30 дней ({monthlyAnalytics.totalDialogs} диалогов)</p>
-                       </div>
-                    </div>
-
-                    {/* Lost Revenue Card */}
-                    <div className="lg:col-span-2 bg-white dark:bg-[#0a0505]/80 border border-rose-500/20 rounded-2xl p-10 flex flex-col justify-between shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-2xl relative overflow-hidden">
-                       <div className="absolute top-0 right-0 w-full h-full bg-gradient-to-l from-rose-500/5 to-transparent pointer-events-none"></div>
-                       <div className="relative z-10 flex flex-col lg:flex-row justify-between lg:items-end gap-10">
-                          <div>
-                             <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-rose-500 mb-8 flex items-center gap-2">
-                               <AlertTriangle size={14} /> Упущенная выгода (LTV + Продажи)
-                             </h3>
-                             <div className="text-6xl font-black italic tracking-tighter text-rose-500 mb-3">
-                               -{monthlyAnalytics.lostRevenue.toLocaleString('ru-RU')} ₽
-                             </div>
-                             
-                          </div>
-                          <div className="flex flex-col md:flex-row bg-rose-50/50 dark:bg-[#140b0b] rounded-xl border border-rose-500/10 p-5 gap-8">
-                             <div className="flex flex-col gap-2">
-                               <span className="text-[9px] font-bold text-rose-500/60 uppercase tracking-widest">Без доп. продажи</span>
-                               <span className="text-xl font-bold text-rose-500">{monthlyAnalytics.missedUpsell}</span>
-                             </div>
-                             <div className="w-px bg-black/5 dark:bg-white/5"></div>
-                             <div className="flex flex-col gap-2">
-                               <span className="text-[9px] font-bold text-rose-500/60 uppercase tracking-widest">Без кросс-селла</span>
-                               <span className="text-xl font-bold text-rose-500">{monthlyAnalytics.missedCrossSell}</span>
-                             </div>
-                          </div>
-                       </div>
-                    </div>
-                 </div>
-
-                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* Weakest Point */}
-                    <div className="bg-white dark:bg-[#0c0d12]/60 border border-black/5 dark:border-white/5 rounded-2xl p-10">
-                       <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8 flex items-center gap-2">
-                         ГЛАВНАЯ ТОЧКА РОСТА
-                       </h3>
-                       <div className="flex items-center justify-between mb-4">
-                          <span className="text-3xl font-black tracking-tighter text-zinc-900 dark:text-white">{monthlyAnalytics.worstMetric.name || 'Нет данных'}</span>
-                          <span className="text-2xl font-bold text-rose-500/80">{monthlyAnalytics.worstMetric.percent}%</span>
-                       </div>
-                       <div className="h-2 w-full bg-black/40 rounded-full overflow-hidden">
-                          <div className="h-full bg-rose-500/50" style={{ width: `${monthlyAnalytics.worstMetric.percent}%` }}></div>
-                       </div>
-                       <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-6">
-                         Требуется дополнительное обучение персонала по этому стандарту взаимодействия.
-                       </p>
-                    </div>
-
-                    {/* Best Shifts */}
-                    <div className="bg-white dark:bg-[#0c0d12]/60 border border-black/5 dark:border-white/5 rounded-2xl p-10">
-                       <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8 flex items-center gap-2">
-                         <Star size={14} className="text-amber-500" /> ЛУЧШИЕ СМЕНЫ МЕСЯЦА
-                       </h3>
-                       <div className="space-y-4">
-                          {monthlyAnalytics.rankedShifts.map((shift, idx) => (
-                             <div key={idx} className="flex items-center justify-between bg-white/[0.02] p-4 rounded-xl border border-black/5 dark:border-white/5">
-                                <div className="flex items-center gap-4">
-                                   <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black ${idx === 0 ? 'bg-amber-500 text-black' : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-white'}`}>
-                                      {idx + 1}
-                                   </div>
-                                   <div>
-                                      <div className="text-sm font-bold">{shift.name}</div>
-                                      <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{new Date(shift.date).toLocaleDateString('ru-RU')} • {shift.count} диалогов</div>
-                                   </div>
                                 </div>
-                                <span className="text-xl font-black italic text-emerald-500/80">{shift.percent}%</span>
-                             </div>
-                          ))}
-                       </div>
+                                <h4 className="text-sm font-bold text-[#1D1D1F] dark:text-[#F5F5F7] mb-1">{agent.name}</h4>
+                                <p className="text-xs text-[#86868B] leading-relaxed mb-4">{agent.desc}</p>
+                              </div>
+
+                              <div className="pt-3 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between mt-auto">
+                                <span className="text-[10px] text-[#86868B]">Последнее обновление:</span>
+                                <span className="text-[10px] font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">{lastActivityStr}</span>
+                              </div>
+                              
+                              {isBusy && agentData?.active_task && (
+                                <div className="absolute inset-x-0 -bottom-2 px-4 z-20">
+                                  <div className="bg-[#007AFF] text-white text-[10px] py-1 px-3.5 rounded-full shadow-md text-center truncate max-w-full font-medium animate-bounce">
+                                    Текущая задача: {agentData.active_task}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Connector Arrow */}
+                            {idx < 2 && (
+                              <div className="hidden lg:flex items-center justify-center shrink-0">
+                                <div className="flex items-center gap-1">
+                                  <span className={`h-1.5 w-1.5 rounded-full bg-[#007AFF] ${isBusy ? 'animate-ping' : ''}`} />
+                                  <div className="h-[2px] w-6 bg-gradient-to-r from-[#007AFF] to-[#5856D6] rounded-full" />
+                                  <ArrowRight size={14} className="text-[#5856D6]" />
+                                </div>
+                              </div>
+                            )}
+                            {idx < 2 && (
+                              <div className="lg:hidden flex items-center justify-center py-2 shrink-0">
+                                <div className="h-6 w-[2px] bg-gradient-to-b from-[#007AFF] to-[#5856D6] rounded-full" />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                 </div>
+                  </div>
+
+                  {/* Telemetry Dashboard Widgets */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                    
+                    {/* GPU Load */}
+                    <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-5 flex flex-col justify-between">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-xs font-semibold text-[#86868B]">Загрузка GPU (Mac Mini)</span>
+                        <Cpu size={16} className={isServerOnline ? "text-[#007AFF]" : "text-[#86868B]/40"} />
+                      </div>
+                      <div>
+                        <div className="flex items-baseline gap-1.5 mb-2">
+                          <span className="text-3xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7] font-mono">
+                            {isServerOnline ? `${realMetrics.gpuLoad}%` : '—'}
+                          </span>
+                          <span className="text-xs text-[#34C759] font-semibold">{isServerOnline ? `${realMetrics.model || "M4"} Core` : '—'}</span>
+                        </div>
+                        <div className="h-2 bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-gradient-to-r from-[#007AFF] to-[#5856D6] rounded-full transition-all duration-1000" 
+                            style={{ width: `${isServerOnline ? realMetrics.gpuLoad : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* GPU Temp */}
+                    <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-5 flex flex-col justify-between">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-xs font-semibold text-[#86868B]">Температура GPU</span>
+                        <Thermometer size={16} className={isServerOnline ? (realMetrics.gpuTemp > 75 ? 'text-[#FF3B30]' : realMetrics.gpuTemp > 65 ? 'text-[#FF9500]' : 'text-[#34C759]') : 'text-[#86868B]/40'} />
+                      </div>
+                      <div>
+                        <div className="flex items-baseline justify-between mb-2">
+                          <span className="text-3xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7] font-mono">
+                            {isServerOnline ? `${realMetrics.gpuTemp}°C` : '—'}
+                          </span>
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            !isServerOnline
+                              ? 'bg-neutral-500/10 text-neutral-500'
+                              : realMetrics.gpuTemp > 75 
+                                ? 'bg-[#FF3B30]/10 text-[#FF3B30]' 
+                                : realMetrics.gpuTemp > 65 
+                                  ? 'bg-[#FF9500]/10 text-[#FF9500]' 
+                                  : 'bg-[#34C759]/10 text-[#34C759]'
+                          }`}>
+                            {!isServerOnline ? 'Выкл' : realMetrics.gpuTemp > 75 ? 'Горячо' : realMetrics.gpuTemp > 65 ? 'Норма' : 'Оптимально'}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[#86868B] flex justify-between">
+                          <span>Порог: 95°C</span>
+                          <span>Кулер: {isServerOnline ? 'Авто' : '—'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* CPU / RAM */}
+                    <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-5 flex flex-col justify-between">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-xs font-semibold text-[#86868B]">Загрузка CPU и ОЗУ</span>
+                        <HardDrive size={16} className={isServerOnline ? "text-[#5856D6]" : "text-[#86868B]/40"} />
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <div className="flex justify-between text-[10px] font-semibold text-[#86868B] mb-1">
+                            <span>CPU</span>
+                            <span>{isServerOnline ? `${realMetrics.cpuLoad}%` : '—'}</span>
+                          </div>
+                          <div className="h-1.5 bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-full overflow-hidden">
+                            <div className="h-full bg-[#5856D6] rounded-full transition-all duration-1000" style={{ width: `${isServerOnline ? realMetrics.cpuLoad : 0}%` }} />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-[10px] font-semibold text-[#86868B] mb-1">
+                            <span>ОЗУ (16 GB)</span>
+                            <span>{isServerOnline ? `${realMetrics.ramUsage}%` : '—'}</span>
+                          </div>
+                          <div className="h-1.5 bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-full overflow-hidden">
+                            <div className="h-full bg-[#AF52DE] rounded-full transition-all duration-1000" style={{ width: `${isServerOnline ? realMetrics.ramUsage : 0}%` }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Latency / Uptime */}
+                    <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-5 flex flex-col justify-between">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-xs font-semibold text-[#86868B]">Сеть и Время работы</span>
+                        <Activity size={16} className={isServerOnline ? "text-[#34C759]" : "text-[#86868B]/40"} />
+                      </div>
+                      <div>
+                        <div className="flex justify-between items-baseline mb-2">
+                          <span className="text-2xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7] font-mono">
+                            {isServerOnline ? `${realMetrics.latency} ms` : '—'}
+                          </span>
+                          <span className="text-xs text-[#86868B]">Пинг к БД</span>
+                        </div>
+                        <div className="pt-2.5 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between text-[10px] text-[#86868B]">
+                          <span>Uptime:</span>
+                          <span className="font-bold text-[#1D1D1F] dark:text-[#F5F5F7] font-mono">{isServerOnline ? realMetrics.uptime : '—'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ===================== VIEW: ANALYTICS ===================== */}
+            {activeView === 'analytics' && (
+              <div className="space-y-8">
+                <div>
+                  <h1 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">Аналитика за 30 дней</h1>
+                  <p className="text-sm text-[#86868B] mt-1">{monthlyAnalytics.totalDialogs} диалогов проанализировано</p>
+                </div>
+
+                {/* Hero number */}
+                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-8 relative overflow-hidden">
+                  <div className="absolute -right-16 -bottom-16 w-48 h-48 bg-[#34C759]/5 blur-[80px] rounded-full pointer-events-none"></div>
+                  <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <TrendingUp size={16} className="text-[#34C759]" />
+                        <span className="text-sm font-medium text-[#34C759]">Средний скрипт по сети</span>
+                      </div>
+                      <div className="text-6xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                        {monthlyAnalytics.networkAvgPercentMonth}%
+                      </div>
+                    </div>
+                    <div className="bg-[#FF3B30]/5 dark:bg-[#FF3B30]/10 rounded-xl border border-[#FF3B30]/10 p-5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <AlertTriangle size={14} className="text-[#FF3B30]" />
+                        <span className="text-xs font-medium text-[#FF3B30]">Упущенная выгода</span>
+                      </div>
+                      <span className="text-3xl font-bold text-[#FF3B30]">-{monthlyAnalytics.lostRevenue.toLocaleString('ru-RU')} &#8381;</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Missed opportunities */}
+                  <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-6">
+                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-6">Упущенные продажи</h3>
+                    <div className="space-y-4">
+                      {[
+                        { label: 'Без допродажи', value: monthlyAnalytics.missedUpsell, color: '#FF3B30' },
+                        { label: 'Без кросс-продажи', value: monthlyAnalytics.missedCrossSell, color: '#FF9500' },
+                        { label: 'Без лояльности', value: monthlyAnalytics.missedLoyalty, color: '#5856D6' },
+                      ].map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }}></div>
+                            <span className="text-sm text-[#86868B]">{item.label}</span>
+                          </div>
+                          <span className="text-lg font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">{item.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Weakest point */}
+                  <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-6">
+                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-6">Главная точка роста</h3>
+                    <div className="flex items-center gap-6">
+                      <div className="relative flex items-center justify-center">
+                        <ScoreRing percent={monthlyAnalytics.worstMetric.percent} size={90} strokeWidth={8} color="#FF3B30" />
+                        <span className="absolute text-lg font-bold text-[#FF3B30]">{monthlyAnalytics.worstMetric.percent}%</span>
+                      </div>
+                      <div>
+                        <p className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">{monthlyAnalytics.worstMetric.name || 'Нет данных'}</p>
+                        <p className="text-xs text-[#86868B] mt-2 leading-relaxed">Требуется дополнительное обучение по этому стандарту</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Best Shifts */}
+                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-6">
+                  <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-4 flex items-center gap-2">
+                    <Star size={16} className="text-[#FF9500]" />
+                    Лучшие смены месяца
+                  </h3>
+                  <div className="space-y-3">
+                    {monthlyAnalytics.rankedShifts.map((shift, idx) => (
+                      <div key={idx} className="flex items-center justify-between bg-[#F5F5F7] dark:bg-[#2C2C2E] p-4 rounded-xl">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${idx === 0 ? 'bg-[#FF9500] text-white' : 'bg-[#E5E5EA] dark:bg-[#38383A] text-[#1D1D1F] dark:text-[#F5F5F7]'}`}>
+                            {idx + 1}
+                          </div>
+                          <div>
+                            <span className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">{shift.name}</span>
+                            <span className="text-xs text-[#86868B] ml-3">{new Date(shift.date).toLocaleDateString('ru-RU')} &middot; {shift.count} диалогов</span>
+                          </div>
+                        </div>
+                        <span className="text-lg font-bold text-[#34C759]">{shift.percent}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            ) : !selectedShopId ? (
-              /* VIEW 1: Network View */
-              <div className="space-y-12">
-                 <div className="flex gap-4 overflow-x-auto py-6 -my-6 px-6 -mx-6 custom-scrollbar touch-pan-x snap-x snap-mandatory" onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY * 1.5;  }}>
-                    {Array.from({length: 7}).map((_, i) => {
-                       const d = new Date();
-                       d.setDate(d.getDate() - i);
-                       const dateStr = getLocalDateStr(d);
-                       const displayDate = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
-                       
-                       const dayDialogs = allDialogs.filter(dx => dx.created_at?.startsWith(dateStr) && dx.audit_details?.dialogue_type !== 'dialog');
-                       let total = 0;
-                       dayDialogs.forEach(dx => total += getDialogPercent(dx));
-                       const avg = dayDialogs.length > 0 ? (total / dayDialogs.length).toFixed(1) : '--';
+            )}
 
-                       const isSelected = selectedDate === dateStr;
+            {/* ===================== VIEW: DASHBOARD (Network) ===================== */}
+            {activeView === 'dashboard' && (
+              <div className="space-y-4">
 
-                       return (
+                {/* ===================== ROW 1: MAIN TREND (Full Width Hero) ===================== */}
+                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-4 md:p-5">
+                  <div>
+                    {/* Title + Toggle */}
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h2 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] uppercase tracking-wider">сетевая аналитика</h2>
+                        <p className="text-[11px] text-[#86868B] mt-0.5">Средняя оценка по всем кофейням</p>
+                      </div>
+                      <div className="flex items-center bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-lg p-0.5">
+                        <button
+                          onClick={() => setAnalyticsPeriod('week')}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all duration-200 ${
+                            analyticsPeriod === 'week'
+                              ? 'bg-white dark:bg-[#3A3A3C] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-sm'
+                              : 'text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
+                          }`}
+                        >
+                          Неделя
+                        </button>
+                        <button
+                          onClick={() => setAnalyticsPeriod('month')}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all duration-200 ${
+                            analyticsPeriod === 'month'
+                              ? 'bg-white dark:bg-[#3A3A3C] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-sm'
+                              : 'text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
+                          }`}
+                        >
+                          Месяц
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* AreaChart */}
+                    <div className="h-[120px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={networkTrend} margin={{ top: 10, right: 10, bottom: 0, left: -25 }}>
+                          <defs>
+                            <linearGradient id="colorOverallScore" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#007AFF" stopOpacity={0.15}/>
+                              <stop offset="95%" stopColor="#007AFF" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke={isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)"} vertical={false} />
+                          <XAxis 
+                            dataKey="name" 
+                            stroke="#86868B" 
+                            fontSize={9} 
+                            tickLine={false} 
+                            axisLine={false} 
+                            dy={6}
+                          />
+                          <YAxis 
+                            stroke="#86868B"
+                            fontSize={9}
+                            tickLine={false}
+                            axisLine={false}
+                            domain={[0, 100]}
+                            dx={-6}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: isDark ? 'rgba(28,28,30,0.95)' : 'rgba(255,255,255,0.95)',
+                              border: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.06)',
+                              borderRadius: '12px',
+                              fontSize: '11px',
+                              color: isDark ? '#F5F5F7' : '#1D1D1F',
+                              backdropFilter: 'blur(8px)',
+                              boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+                              padding: '6px 10px',
+                            }}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            formatter={(value: any) => [`${value}%`, "Общая оценка"]}
+                            labelFormatter={(label) => `${label}`}
+                          />
+                          <Area 
+                            type="monotone" 
+                            dataKey="Оценка" 
+                            stroke="#007AFF" 
+                            strokeWidth={2.5} 
+                            fillOpacity={1}
+                            fill="url(#colorOverallScore)"
+                            dot={{ r: 2.5, stroke: "#007AFF", strokeWidth: 1.5, fill: isDark ? "#1C1C1E" : "#ffffff" }}
+                            activeDot={{ r: 4.5, stroke: "#007AFF", strokeWidth: 2, fill: "#007AFF" }}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ===================== ROW 2: GRID CONTENT (2/3 width Left + 1/3 width Right) ===================== */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {/* Left Section (2/3 width) - One Unified Card */}
+                  <div className="lg:col-span-2 bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl overflow-hidden flex flex-col justify-between">
+                    {/* Top part: Sparklines (2-column layout with vertical divider) */}
+                    <div className="grid grid-cols-1 md:grid-cols-2">
+                      {/* Апсейл Sparkline */}
+                      <div className="p-4 md:p-5 flex flex-col justify-between h-[130px] relative overflow-hidden md:border-r border-black/[0.06] dark:border-white/[0.08] min-w-0">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] uppercase tracking-wider">апсейл</span>
+                          <span className="text-lg font-bold text-[#007AFF] flex items-center gap-1 select-none">
+                            {dailyMetricsAverages.upsell}%
+                            {metricTrends.upsellUp ? (
+                              <span className="text-[10px] text-[#34C759] font-bold">▲</span>
+                            ) : (
+                              <span className="text-[10px] text-[#FF3B30] font-bold">▼</span>
+                            )}
+                          </span>
+                        </div>
+                        <div className="h-[65px] w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={sparklineTrends} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+                              <defs>
+                                <linearGradient id="colorUpsell" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#007AFF" stopOpacity={0.15}/>
+                                  <stop offset="95%" stopColor="#007AFF" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <Area 
+                                type="monotone" 
+                                dataKey="upsell" 
+                                stroke="#007AFF" 
+                                strokeWidth={2} 
+                                fillOpacity={1}
+                                fill="url(#colorUpsell)"
+                                dot={false}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      {/* Кроссейл Sparkline */}
+                      <div className="p-4 md:p-5 flex flex-col justify-between h-[130px] relative overflow-hidden min-w-0">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] uppercase tracking-wider">кроссейл</span>
+                          <span className="text-lg font-bold text-[#007AFF] flex items-center gap-1 select-none">
+                            {dailyMetricsAverages.crossSell}%
+                            {metricTrends.crossSellUp ? (
+                              <span className="text-[10px] text-[#34C759] font-bold">▲</span>
+                            ) : (
+                              <span className="text-[10px] text-[#FF3B30] font-bold">▼</span>
+                            )}
+                          </span>
+                        </div>
+                        <div className="h-[65px] w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={sparklineTrends} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+                              <defs>
+                                <linearGradient id="colorCrosssell" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#007AFF" stopOpacity={0.15}/>
+                                  <stop offset="95%" stopColor="#007AFF" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <Area 
+                                type="monotone" 
+                                dataKey="crosssell" 
+                                stroke="#007AFF" 
+                                strokeWidth={2} 
+                                fillOpacity={1}
+                                fill="url(#colorCrosssell)"
+                                dot={false}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Horizontal Divider Line */}
+                    <div className="border-t border-black/[0.06] dark:border-white/[0.08]" />
+
+                    {/* Bottom part: Segmented progress bars */}
+                    <div className="p-4 md:p-5 flex flex-col justify-center space-y-3 bg-black/[0.01] dark:bg-white/[0.01]">
+                      {[
+                        { label: "Помощь В Выборе", percent: dailyMetricsAverages.christmasTree, up: metricTrends.christmasTreeUp },
+                        { label: "Программа Лояльности", percent: dailyMetricsAverages.loyalty, up: metricTrends.loyaltyUp },
+                        { label: "Дублирование Заказа", percent: dailyMetricsAverages.orderDuplication, up: metricTrends.orderDuplicationUp },
+                      ].map((item, idx) => (
+                        <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2 border-b border-black/[0.03] dark:border-white/[0.03] last:border-0 font-medium">
+                          <span className="text-sm text-[#1D1D1F] dark:text-[#F5F5F7]">{item.label}</span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex gap-[3px]">
+                              {Array.from({ length: 10 }).map((_, sIdx) => {
+                                const isFilled = sIdx < Math.round((item.percent / 100) * 10);
+                                return (
+                                  <div
+                                    key={sIdx}
+                                    className={`w-4 h-5 sm:w-5 sm:h-6 rounded-[3px] transition-all duration-300 ${
+                                      isFilled
+                                        ? "bg-[#007AFF]/80 dark:bg-[#007AFF]/90"
+                                        : "bg-black/[0.06] dark:bg-white/[0.06]"
+                                    }`}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <span className="text-sm font-bold text-[#1D1D1F] dark:text-[#F5F5F7] min-w-[40px] text-right flex items-center justify-end gap-1 select-none">
+                              {item.percent}%
+                              {item.up ? (
+                                <span className="text-[10px] text-[#34C759] font-bold">▲</span>
+                              ) : (
+                                <span className="text-[10px] text-[#FF3B30] font-bold">▼</span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Right Section (1/3 width): Location rating with stars */}
+                  <div className="lg:col-span-1 bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-4 md:p-5 flex flex-col justify-between">
+                    <div>
+                      <h2 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-0.5 uppercase tracking-wider">рейтинг локаций</h2>
+                      <p className="text-[11px] text-[#86868B] mb-3">По уровню соблюдения скриптов</p>
+                      
+                      <div className="space-y-2 overflow-y-auto max-h-[200px] custom-scrollbar pr-1">
+                        {shopSummaries.map((shop) => (
+                          <div 
+                            key={shop.id} 
+                            className="flex items-center justify-between cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.03] p-1.5 rounded-xl transition-colors" 
+                            onClick={() => setSelectedShopId(shop.id)}
+                          >
+                            <span className="text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] truncate max-w-[140px]">{shop.name}</span>
+                            <div className="flex items-center gap-0.5 text-[#FF9500] shrink-0">
+                              {Array.from({ length: 5 }).map((_, sIdx) => {
+                                const starVal = Math.round(shop.avgScorePercent / 20);
+                                return (
+                                  <Star 
+                                    key={sIdx} 
+                                    size={11} 
+                                    className={sIdx < starVal ? "fill-[#FF9500] text-[#FF9500]" : "text-black/[0.1] dark:text-white/[0.1]"} 
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ===================== ROW 3: DATE SELECTOR (with datepicker) ===================== */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center px-1">
+                    <span className="text-[11px] font-semibold text-[#86868B]">Выбор даты</span>
+                    <div className="relative">
+                      <button 
+                        onClick={() => dateInputRef.current?.showPicker()} 
+                        className="px-3 py-1.5 text-[11px] font-semibold bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] hover:bg-black/[0.02] dark:hover:bg-white/[0.02] active:scale-95 transition-all rounded-xl text-[#1D1D1F] dark:text-[#F5F5F7] flex items-center gap-1.5"
+                      >
+                        <Calendar size={12} className="text-[#86868B]" />
+                        выбрать дату архива
+                      </button>
+                      <input 
+                        ref={dateInputRef}
+                        type="date" 
+                        value={selectedDate}
+                        onChange={(e) => { setSelectedDate(e.target.value); setView('dashboard'); }}
+                        className="absolute opacity-0 w-0 h-0 pointer-events-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div 
+                    ref={dateScrollRef}
+                    onMouseDown={handleDateScrollMouseDown}
+                    onDragStart={(e) => e.preventDefault()}
+                    onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY * 1.5; }}
+                    className={`w-full overflow-x-auto custom-scrollbar touch-pan-x date-slider-container ${isDragging ? 'cursor-grabbing select-none' : 'cursor-grab snap-x snap-mandatory'}`}
+                  >
+                    <div className="flex gap-2 py-1 select-none">
+                      {Array.from({length: 30}).map((_, i) => {
+                        const d = new Date();
+                        d.setDate(d.getDate() - i);
+                        const dateStr = getLocalDateStr(d);
+                        const displayDate = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+                        const dayDialogs = allDialogs.filter(dx => dx.created_at?.startsWith(dateStr) && dx.audit_details?.dialogue_type !== 'dialog');
+                        let total = 0;
+                        dayDialogs.forEach(dx => total += getDialogPercent(dx));
+                        const avg = dayDialogs.length > 0 ? (total / dayDialogs.length).toFixed(0) : '--';
+                        const isSelected = selectedDate === dateStr;
+
+                        return (
                           <button 
                             key={dateStr}
-                            onClick={() => { setSelectedDate(dateStr); setView('dashboard'); }}
-                            className={`snap-center flex-shrink-0 flex flex-col justify-between p-4 rounded-3xl border transition-all h-24 w-40 text-left cursor-pointer
+                            onClick={() => handleDateClick(dateStr)}
+                            onDragStart={(e) => e.preventDefault()}
+                            style={{ width: 'var(--card-width)', minWidth: 'var(--card-width)' }}
+                            className={`flex-shrink-0 flex flex-col items-center justify-center gap-1 rounded-xl border transition-all duration-200 h-24 sm:h-28 py-3 px-2 cursor-pointer
+                              ${isDragging ? '' : 'snap-center'}
                               ${isSelected 
-                                ? 'bg-zinc-900 dark:bg-white border-transparent shadow-xl' 
-                                : 'bg-white dark:bg-[#0c0d12] hover:bg-zinc-100 dark:bg-zinc-900 border-black/5 dark:border-white/5'}`}
+                                ? 'bg-[#007AFF] border-transparent shadow-lg shadow-[#007AFF]/25 text-white' 
+                                : 'bg-white dark:bg-[#1C1C1E] hover:bg-[#F5F5F7] dark:hover:bg-[#2C2C2E] border-black/[0.06] dark:border-white/[0.08]'}`}
                           >
-                             <span className={`text-[10px] font-bold ${isSelected ? 'text-white dark:text-black' : 'text-zinc-500'}`}>{displayDate}</span>
-                             <div className="flex justify-between items-end mt-4">
-                                <span className={`text-xl font-black tracking-tighter ${isSelected ? 'text-white dark:text-black' : 'text-zinc-900 dark:text-white'}`}>{avg}</span>
-                                <span className={`text-[8px] font-bold uppercase tracking-widest ${isSelected ? 'text-white/60 dark:text-black/60' : 'text-zinc-500 dark:text-zinc-600'}`}>{dayDialogs.length} диалогов</span>
-                             </div>
+                            <span className={`text-sm sm:text-base font-bold tracking-wide ${isSelected ? 'text-white' : 'text-[#1D1D1F] dark:text-[#F5F5F7]'}`}>{displayDate}</span>
+                            <span className={`text-lg sm:text-xl font-extrabold ${isSelected ? 'text-white/90' : 'text-[#007AFF]'}`}>{avg}%</span>
+                            <span className={`text-[10px] sm:text-[11px] font-medium ${isSelected ? 'text-white/60' : 'text-[#86868B]'}`}>{dayDialogs.length} {getDialogWord(dayDialogs.length)}</span>
                           </button>
-                       );
-                    })}
-                 </div>
-                 <section className="bg-white dark:bg-[#0c0d12]/60 border border-black/5 dark:border-white/5 rounded-2xl overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-2xl backdrop-blur-xl">
-                    <div className="p-10 border-b border-black/5 dark:border-white/5 bg-gradient-to-br from-black/[0.02] dark:from-white/[0.02] to-transparent">
-                      <div className="flex items-center gap-3 mb-8">
-                         <TrendingUp size={18} className="text-zinc-600" />
-                         <h3 className="text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-600">Сетевая динамика</h3>
-                      </div>
-                      <div className="h-[300px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={networkTrend}>
-                            <defs>
-                              <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke={isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)"} vertical={false} />
-                            <XAxis 
-                              dataKey="name" 
-                              stroke="#71717a" fontSize={9} fontWeight="bold" 
-                              tickLine={false} axisLine={false} dy={10}
-                            />
-                            <YAxis hide domain={[0, 100]} />
-                            <Tooltip 
-                              contentStyle={{ 
-                                backgroundColor: isDark ? 'rgba(15, 17, 23, 0.8)' : 'rgba(255, 255, 255, 0.85)', 
-                                border: isDark ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 0, 0, 0.05)', 
-                                borderRadius: '16px', 
-                                fontSize: '10px', 
-                                color: isDark ? '#fff' : '#000',
-                                backdropFilter: 'blur(12px)',
-                                boxShadow: '0 10px 30px rgba(0,0,0,0.15)'
-                              }}
-                              itemStyle={{ color: isDark ? '#fff' : '#000', fontWeight: 'bold' }}
-                            />
-                            <Area 
-                              type="monotone" 
-                              dataKey="Оценка" 
-                              stroke="#10b981" 
-                              strokeWidth={3} 
-                              fillOpacity={1}
-                              fill="url(#colorScore)"
-                              dot={{ r: 4, stroke: "#10b981", strokeWidth: 2, fill: isDark ? "#0c0d12" : "#ffffff" }}
-                              activeDot={{ r: 6, stroke: "#10b981", strokeWidth: 2, fill: "#10b981" }}
-                            />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                      </div>
-                   </div>
-                   <div className="grid grid-cols-1 lg:grid-cols-2">
-                      <div className="p-8 border-r border-black/5 dark:border-white/5">
-                         <div className="flex items-center gap-3 mb-8">
-                           <AlertTriangle size={18} className="text-zinc-900 dark:text-white" />
-                           <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-900 dark:text-white">Краткая аналитика</h3>
-                         </div>
-                         <div className="space-y-5">
-                           {networkPerformance.map((issue) => (
-                             <div key={issue.key} className="space-y-2 group">
-                               <div className="flex justify-between items-end">
-                                 <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600 dark:text-zinc-400">
-                                   {issue.name}
-                                 </span>
-                                 <span className={issue.percent < 50 ? "text-base font-bold text-rose-500" : "text-base font-bold text-emerald-500"}>
-                                   {issue.percent}%
-                                 </span>
-                               </div>
-                               <div className="h-1 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
-                                 <div className="h-full bg-zinc-900 dark:bg-zinc-100" style={{ width: `${issue.percent}%` }}></div>
-                               </div>
-                             </div>
-                           ))}
-                         </div>
-                      </div>
-                      <div className="p-8">
-                         <div className="flex items-center gap-3 mb-8">
-                           <Star size={18} className="text-zinc-500" />
-                           <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Рейтинг локаций</h3>
-                         </div>
-                         <div className="space-y-4">
-                            {shopSummaries.map((shop, idx) => (
-                              <div key={shop.id} className="flex items-center justify-between group cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 p-2 rounded-xl transition-all" onClick={() => setSelectedShopId(shop.id)}>
-                                 <div className="flex items-center gap-3">
-                                    <span className="text-xs font-bold text-zinc-600">{idx + 1}.</span>
-                                    <span className="text-sm font-bold text-zinc-700 dark:text-zinc-300">{shop.name}</span>
-                                 </div>
-                                 <span className="text-sm font-black text-emerald-500/80">{shop.avgScorePercent}%</span>
-                              </div>
-                            ))}
-                         </div>
-                      </div>
-                   </div>
-                </section>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {shopSummaries.map((shop) => (
-                    <div 
-                      key={shop.id}
-                      className="bg-white dark:bg-[#0f1115]/60 border border-black/5 dark:border-white/5 rounded-2xl p-8 transition-all hover:bg-white dark:bg-[#0f1115]/80 shadow-xl flex flex-col justify-between"
-                    >
-                      <div>
-                        <div className="flex justify-between items-start mb-8">
-                           <h2 className="text-2xl font-bold tracking-tighter text-zinc-900 dark:text-white">{shop.name}</h2>
-                           <div className="text-xl font-black text-zinc-900 dark:text-white">{shop.avgScorePercent}%</div>
-                        </div>
-                        <div className="space-y-6">
-                          <div className="flex items-center justify-between text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
-                            <div className="flex items-center gap-2"><Clock size={12} /> {shop.count} диалогов за день</div>
-                          </div>
-                          
-                          <div className="space-y-3">
-                            <div className="flex justify-between items-end text-xs font-bold text-zinc-600 dark:text-zinc-400">
-                               <span>Сегодня</span>
-                               <span className="text-zinc-900 dark:text-white">{shop.avgScorePercent}%</span>
-                            </div>
-                            <div className="h-1.5 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
-                              <div className="h-full bg-zinc-900 dark:bg-zinc-100" style={{ width: `${shop.avgScorePercent}%` }}></div>
-                            </div>
-                            
-                            <div className="flex justify-between items-end text-xs font-bold text-zinc-500 mt-2">
-                               <span>За неделю</span>
-                               <span className="text-zinc-900 dark:text-white/60">{shop.weeklyAvgPercent}%</span>
-                            </div>
-                            <div className="h-1.5 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
-                              <div className="h-full bg-zinc-400 dark:bg-zinc-500" style={{ width: `${shop.weeklyAvgPercent}%` }}></div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setSelectedShopId(shop.id)}
-                        className="mt-8 w-full py-3 border border-black/5 dark:border-white/5 rounded-xl font-bold uppercase tracking-widest text-[10px] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:text-white hover:bg-black/5 dark:hover:bg-white/5 transition-all"
-                      >
-                         Подробнее
-                      </button>
+                        );
+                      })}
                     </div>
-                  ))}
+                  </div>
+                </div>
+
+                {/* ===================== ROW 4: BOTTOM SHOP CARDS ===================== */}
+                <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                  {shopSummaries.map((shop) => {
+                    const scoreColor = shop.avgScorePercent >= 70 ? '#34C759' : shop.avgScorePercent >= 40 ? '#FF9500' : '#FF3B30';
+                    return (
+                      <div 
+                        key={shop.id}
+                        onClick={() => setSelectedShopId(shop.id)}
+                        className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-4 flex flex-col justify-between transition-all duration-200 hover:shadow-md cursor-pointer group relative overflow-hidden"
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex-1 min-w-0 mr-3">
+                            <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] truncate group-hover:text-[#007AFF] transition-colors">{shop.name}</h3>
+                            <p className="text-[11px] text-[#86868B] mt-1 font-medium">{shop.count} {getDialogWord(shop.count)}</p>
+                          </div>
+                          <div className="relative flex items-center justify-center shrink-0">
+                            <ScoreRing percent={shop.avgScorePercent} size={46} strokeWidth={4} color={scoreColor} />
+                            <span className="absolute text-[10px] font-bold" style={{ color: scoreColor }}>{shop.avgScorePercent}%</span>
+                          </div>
+                        </div>
+                        
+                        <div className="mt-2.5 w-full">
+                          <button className="w-full py-1.5 px-3 text-[11px] font-semibold bg-[#F5F5F7] dark:bg-[#2C2C2E] hover:bg-[#007AFF]/10 hover:text-[#007AFF] dark:hover:bg-[#007AFF]/20 dark:hover:text-[#007AFF] text-[#1D1D1F] dark:text-[#F5F5F7] rounded-xl transition-all duration-200 text-center">
+                            Перейти
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            ) : (
-              /* VIEW 2: Shop Details */
-              <div className="space-y-10">
-                <section className="grid md:grid-cols-12 gap-8 mb-4">
-                   <div className="md:col-span-8 bg-white dark:bg-[#0c0d12]/60 border border-black/5 dark:border-white/5 rounded-2xl p-10">
-                      <div className="flex flex-col xl:flex-row xl:items-end justify-between mb-8 gap-8">
-                         <div>
-                           <h2 className="text-3xl md:text-4xl font-bold tracking-tighter mb-4 text-zinc-900 dark:text-white break-words">{selectedShopSummary?.name}</h2>
-                           <div className="flex flex-col sm:flex-row gap-4 sm:gap-8">
-                              <div className="flex flex-col">
-                                 <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Диалогов за период</span>
-                                 <span className="text-2xl font-bold text-zinc-900 dark:text-white">{selectedShopSummary?.count}</span>
-                              </div>
-                              <div className="flex flex-col sm:border-l border-black/5 dark:border-white/5 sm:pl-8">
-                                 <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Соблюдение скрипта</span>
-                                 <span className="text-2xl font-bold text-zinc-900 dark:text-white">{selectedShopSummary?.avgScorePercent}%</span>
-                              </div>
-                           </div>
-                         </div>
-                         <div className="text-left xl:text-right">
-                            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">Статус обработки</div>
-                            <div className="bg-zinc-100 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 px-5 py-3 rounded-xl flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest border border-black/5 dark:border-white/5">
-                              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span> {appStatus?.status_message || "Системный онлайн"}
-                            </div>
-                         </div>
-                      </div>
-                   </div>
+            )}
 
-                   <div className="md:col-span-4 bg-white dark:bg-[#0c0d12]/60 border border-black/5 dark:border-white/5 rounded-2xl p-10">
-                      <div className="flex items-center gap-3 mb-8 text-zinc-600">
-                         <AlertTriangle size={18} />
-                         <h3 className="text-[10px] font-bold uppercase tracking-widest">Аналитика по пунктам</h3>
+            {/* ===================== VIEW: SHOP DETAIL ===================== */}
+            {activeView === 'shopDetail' && (
+              <div className="space-y-8">
+                {/* Shop header */}
+                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-6">
+                  <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
+                    <div>
+                      <h1 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-3">{selectedShopSummary?.name}</h1>
+                      <div className="flex flex-wrap gap-6">
+                        <div>
+                          <span className="text-xs text-[#86868B]">Диалогов</span>
+                          <p className="text-xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">{selectedShopSummary?.count}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-[#86868B]">Скрипт</span>
+                          <p className="text-xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">{selectedShopSummary?.avgScorePercent}%</p>
+                        </div>
+                        <div>
+                          <span className="text-xs text-[#86868B]">Статус</span>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="w-2 h-2 bg-[#34C759] rounded-full"></span>
+                            <span className="text-sm font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">{appStatus?.status_message || 'Онлайн'}</span>
+                          </div>
+                        </div>
                       </div>
-                      <div className="space-y-5">
-                         {shopPerformanceStats.map((stat) => (
-                            <div key={stat.key} className="space-y-2">
-                               <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                                  <span>{stat.name}</span>
-                                  <span className="text-zinc-600 dark:text-zinc-400">{stat.percent}%</span>
-                               </div>
-                               <div className="h-1 bg-black/40 rounded-full overflow-hidden">
-                                  <div className="h-full bg-emerald-500/40" style={{ width: `${stat.percent}%` }}></div>
-                               </div>
-                            </div>
-                         ))}
-                      </div>
-                   </div>
-                </section>
+                    </div>
+                    {/* Shop score ring */}
+                    <div className="relative flex items-center justify-center">
+                      <ScoreRing percent={selectedShopSummary?.avgScorePercent || 0} size={100} strokeWidth={8} color={
+                        (selectedShopSummary?.avgScorePercent || 0) >= 70 ? '#34C759' : (selectedShopSummary?.avgScorePercent || 0) >= 40 ? '#FF9500' : '#FF3B30'
+                      } />
+                      <span className="absolute text-xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">{selectedShopSummary?.avgScorePercent || 0}%</span>
+                    </div>
+                  </div>
+                </div>
 
-                <div className="space-y-4">
+                {/* Performance breakdown */}
+                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-6">
+                  <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-5">Оценки по критериям</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {shopPerformanceStats.map((stat) => (
+                      <div key={stat.key} className="bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-xl p-4">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-xs font-medium text-[#86868B]">{stat.name}</span>
+                          <span className={`text-sm font-bold ${stat.percent >= 80 ? 'text-[#34C759]' : stat.percent >= 50 ? 'text-[#FF9500]' : 'text-[#FF3B30]'}`}>{stat.percent}%</span>
+                        </div>
+                        <div className="h-1.5 bg-[#E5E5EA] dark:bg-[#38383A] rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full transition-all duration-500 ${stat.percent >= 80 ? 'bg-[#34C759]' : stat.percent >= 50 ? 'bg-[#FF9500]' : 'bg-[#FF3B30]'}`} style={{ width: `${stat.percent}%` }}></div>
+                        </div>
+                        {stat.violations > 0 && <p className="text-[10px] text-[#FF3B30] mt-1.5">{stat.violations} нарушений</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Dialog list - clean table-like rows */}
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mb-2">Список диалогов</h3>
                   {shopDetails
                     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
                     .map((dialog, idx) => ({ dialog, originalIdx: idx + 1 }))
@@ -1047,195 +1705,200 @@ export default function Dashboard() {
                     .map(({ dialog, originalIdx }) => (
                     <div 
                       key={dialog.id}
-                      className={`bg-white dark:bg-[#0c0d12]/40 border ${expandedDialogId === dialog.id ? 'border-zinc-700' : 'border-black/5 dark:border-white/5'} rounded-2xl overflow-hidden`}
+                      className={`bg-white dark:bg-[#1C1C1E] border rounded-2xl overflow-hidden transition-all duration-200 ${expandedDialogId === dialog.id ? 'border-[#007AFF]/30 shadow-sm' : 'border-black/[0.06] dark:border-white/[0.08]'}`}
                     >
-                      <div onClick={() => setExpandedDialogId(expandedDialogId === dialog.id ? null : dialog.id)} className="p-5 sm:p-8 flex flex-col md:flex-row items-start md:items-center justify-between cursor-pointer gap-4 md:gap-0">
-                         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-10">
-                            <div className="flex flex-col">
-                              <span className="text-xl font-bold tracking-tighter text-zinc-900 dark:text-white">Диалог #{originalIdx}</span>
-                              {dialog.original_audio_file && (
-                                <span className="text-xs text-zinc-400 font-mono mt-0.5">{dialog.original_audio_file}</span>
-                              )}
-                            </div>
-                            <span className="text-[11px] font-bold text-zinc-500 uppercase">
-                               {new Date(dialog.created_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute:'2-digit'})}
-                            </span>
-                            {!dialog.audit_details ? (
-                               <span className="bg-zinc-500/10 text-zinc-500 border border-zinc-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
-                                 Анализ...
-                               </span>
-                            ) : dialog.audit_details.dialogue_type === 'additional_order' ? (
-                               <span className="bg-blue-500/10 text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
-                                 Дозаказ
-                               </span>
-                            ) : dialog.audit_details.dialogue_type === 'dialog' ? (
-                               <span className="bg-amber-500/10 text-amber-500 border border-amber-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
-                                 Разговор
-                               </span>
-                            ) : (
-                               <span className="bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest">
-                                 Заказ
-                               </span>
+                      {/* Row header */}
+                      <div onClick={() => setExpandedDialogId(expandedDialogId === dialog.id ? null : dialog.id)} className="px-5 py-4 flex items-center justify-between cursor-pointer hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors">
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">Диалог #{originalIdx}</span>
+                            {dialog.original_audio_file && (
+                              <span className="text-[10px] text-[#86868B] font-mono truncate max-w-[200px]">{dialog.original_audio_file}</span>
                             )}
-                            {dialog.audit_details?.is_conflict && (
-                               <span className="bg-rose-500 text-white border border-rose-500/20 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest animate-pulse shadow-[0_0_10px_rgba(244,63,94,0.5)]">
-                                 Конфликт
-                               </span>
-                            )}
-                         </div>
-                         <div className={`text-4xl font-light tracking-tight ${!dialog.audit_details ? 'text-zinc-500 text-3xl' : dialog.audit_details.dialogue_type === 'dialog' ? 'text-amber-500/50 text-3xl' : (getDialogPercent(dialog) >= 80 ? 'text-emerald-500' : 'text-rose-500')}`}>
-                           {!dialog.audit_details ? '—' : dialog.audit_details.dialogue_type === 'dialog' ? 'Н/А' : `${getDialogPercent(dialog)}%`}
-                         </div>
+                          </div>
+                          <span className="text-xs text-[#86868B] shrink-0">
+                            {dialog.transcript?.[0]?.start !== undefined ? formatAbsoluteTime(dialog.transcript[0].start) : new Date(dialog.created_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute:'2-digit'})}
+                          </span>
+                          {!dialog.audit_details ? (
+                            <span className="bg-[#E5E5EA] dark:bg-[#38383A] text-[#86868B] px-2.5 py-0.5 rounded-full text-[10px] font-medium shrink-0">Анализ...</span>
+                          ) : dialog.audit_details.dialogue_type === 'additional_order' ? (
+                            <span className="bg-[#007AFF]/10 text-[#007AFF] px-2.5 py-0.5 rounded-full text-[10px] font-medium shrink-0">Дозаказ</span>
+                          ) : dialog.audit_details.dialogue_type === 'dialog' ? (
+                            <span className="bg-[#FF9500]/10 text-[#FF9500] px-2.5 py-0.5 rounded-full text-[10px] font-medium shrink-0">Разговор</span>
+                          ) : (
+                            <span className="bg-[#34C759]/10 text-[#34C759] px-2.5 py-0.5 rounded-full text-[10px] font-medium shrink-0">Заказ</span>
+                          )}
+                          {dialog.audit_details?.is_conflict && (
+                            <span className="bg-[#FF3B30] text-white px-2.5 py-0.5 rounded-full text-[10px] font-medium shrink-0">Конфликт</span>
+                          )}
+                        </div>
+                        <span className={`text-2xl font-semibold shrink-0 ml-4 ${!dialog.audit_details ? 'text-[#86868B]' : dialog.audit_details.dialogue_type === 'dialog' ? 'text-[#FF9500]/50' : (getDialogPercent(dialog) >= 80 ? 'text-[#34C759]' : 'text-[#FF3B30]')}`}>
+                          {!dialog.audit_details ? '—' : dialog.audit_details.dialogue_type === 'dialog' ? 'Н/А' : `${getDialogPercent(dialog)}%`}
+                        </span>
                       </div>
 
+                      {/* Expanded panel */}
                       {expandedDialogId === dialog.id && (
-                        <div className="px-10 pb-12 pt-6 border-t border-black/5 dark:border-white/5">
-                           <div className="grid lg:grid-cols-12 gap-12">
-                              <div className="lg:col-span-5 space-y-8">
-                                 <button onClick={() => playPhrase(dialog, 0)} className="bg-white text-black px-8 py-4 rounded-xl font-bold uppercase text-xs">Прослушать целиком</button>
-                                 <div className="bg-white dark:bg-[#0c0d12] p-8 rounded-2xl border border-black/5 dark:border-white/5 space-y-6">
-                                    <div className="space-y-4 mb-6">
-                                      <h4 className="text-[10px] font-bold text-zinc-500 uppercase">Оценки QA (Заказ)</h4>
-                                      {[ 
-                                        { key: 'cross_sales_score', label: 'Кросс-селл' },
-                                        { key: 'upsell_score', label: 'Апселл' },
-                                        { key: 'christmas_tree_score', label: 'Помощь в выборе' },
-                                        { key: 'promo_score', label: 'Акция' },
-                                        { key: 'loyalty_score', label: 'Лояльность' },
-                                        { key: 'order_duplication_score', label: 'Дубл. заказа' }
-                                      ].map((metric) => {
-                                        const details = dialog.audit_details;
-                                        const score = details ? (details[metric.key as keyof typeof details] as number) || 0 : 0;
-                                        const isDialog = details?.dialogue_type === 'dialog';
-                                        const isExcluded = isDialog || !details;
-                                        const percent = isExcluded ? 0 : score;
-                                        
-                                        return (
-                                          <div key={metric.key} className={`space-y-2 ${isExcluded ? 'opacity-30' : ''}`}>
-                                            <div className="flex justify-between items-center text-[9px] font-bold uppercase tracking-widest text-zinc-600 dark:text-zinc-400">
-                                              <span>{metric.label}</span>
-                                              <span className={isExcluded ? "text-zinc-600" : (score >= 100 ? "text-emerald-500" : "text-rose-500")}>
-                                                {isExcluded ? "Н/А" : `${Math.round(percent)}%`}
-                                              </span>
-                                            </div>
-                                            <div className="h-1.5 bg-black/50 rounded-full overflow-hidden">
-                                              <div className={`h-full ${isExcluded ? "bg-zinc-700" : (score >= 100 ? "bg-emerald-500/70" : "bg-rose-500/70")}`} style={{ width: isExcluded ? '100%' : `${percent}%` }}></div>
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
+                        <div className="px-3 sm:px-5 pb-5 pt-4 border-t border-black/[0.06] dark:border-white/[0.06]">
+                          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
-                                      {/* LIVE SERVICE BADGE */}
-                                      {dialog.audit_details && dialog.audit_details.dialogue_type !== 'dialog' && (
-                                        <div className="mt-8 pt-6 border-t border-black/5 dark:border-white/5 space-y-4">
-                                           <div className="flex items-center justify-between">
-                                              <h4 className="text-[10px] font-bold text-amber-500 uppercase flex items-center gap-2">
-                                                <Star size={12} /> Живой сервис
-                                              </h4>
-                                              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${(dialog.audit_details.live_service_score || 0) >= 75 ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-black/10 dark:bg-white/10 text-zinc-500'}`}>
-                                                {`${dialog.audit_details.live_service_score || 0}%`}
-                                              </span>
-                                           </div>
-                                        </div>
-                                      )}
-                                    </div>
-
-                                    {/* EMOTION STATS UI */}
-                                    {dialog.audit_details?.emotion_stats && (
-                                      <div className="p-5 bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 rounded-2xl space-y-4">
-                                         <div className="flex items-center justify-between">
-                                            <h4 className="text-[10px] font-bold text-indigo-500 uppercase flex items-center gap-2">
-                                              <Volume2 size={12} /> Акустический анализ эмоций (GigaAM-Emo)
-                                            </h4>
-                                            {dialog.audit_details?.is_conflict && (
-                                              <span className="bg-rose-500 text-white px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest shadow-lg shadow-rose-500/30 animate-pulse">
-                                                🚨 КОНФЛИКТ
-                                              </span>
-                                            )}
-                                         </div>
-                                         <div className="grid grid-cols-2 gap-4">
-                                            {dialog.audit_details.emotion_stats.split(',').map((stat: string, i: number) => {
-                                              const [name, valStr] = stat.trim().split('=');
-                                              if (!name || !valStr) return null;
-                                              let val = parseFloat(valStr) * 100;
-                                              if (isNaN(val)) val = 0;
-                                              
-                                              let color = "bg-zinc-500";
-                                              let label = name;
-                                              if (name.includes('angry')) { color = "bg-rose-500"; label = "Агрессия"; }
-                                              else if (name.includes('positive')) { color = "bg-emerald-500"; label = "Позитив"; }
-                                              else if (name.includes('sad')) { color = "bg-blue-500"; label = "Грусть"; }
-                                              else if (name.includes('neutral')) { color = "bg-zinc-400 dark:bg-zinc-600"; label = "Нейтральность"; }
-
-                                              return (
-                                                <div key={i} className="space-y-1">
-                                                  <div className="flex justify-between text-[9px] font-bold uppercase tracking-widest text-zinc-600 dark:text-zinc-400">
-                                                    <span>{label}</span>
-                                                    <span>{Math.round(val)}%</span>
-                                                  </div>
-                                                  <div className="h-1.5 w-full bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
-                                                    <div className={`h-full ${color}`} style={{ width: `${val}%` }}></div>
-                                                  </div>
-                                                </div>
-                                              );
-                                            })}
-                                         </div>
-                                      </div>
-                                    )}
-
-                                    {dialog.audit_details?.critical_errors && dialog.audit_details.critical_errors !== "Не выявлено" && (
-                                      <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl">
-                                        <h4 className="text-[10px] font-bold text-rose-500 uppercase mb-2">Критические ошибки</h4>
-                                        <p className="text-sm text-zinc-700 dark:text-zinc-300">{dialog.audit_details.critical_errors}</p>
-                                      </div>
-                                    )}
-                                    {dialog.audit_details?.additional_service && !["null", "none", "не выявлено"].includes(String(dialog.audit_details.additional_service).toLowerCase()) && (
-                                      <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
-                                        <h4 className="text-[10px] font-bold text-emerald-500 uppercase mb-2">Дополнительный сервис</h4>
-                                        <p className="text-sm text-zinc-700 dark:text-zinc-300">{dialog.audit_details.additional_service}</p>
-                                      </div>
-                                    )}
-                                    <div>
-                                      <h4 className="text-[10px] font-bold text-zinc-500 uppercase mb-2">Рекомендация QA</h4>
-                                      <p className="text-sm text-zinc-600 dark:text-zinc-400 italic">{dialog.text_analysis || "Анализ не доступен."}</p>
-                                    </div>
-                                 </div>
-                              </div>
-                              <div className="lg:col-span-7">
-                                  <div className="bg-zinc-50 dark:bg-black/20 p-6 md:p-8 rounded-3xl h-[500px] overflow-y-auto custom-scrollbar border border-black/5 dark:border-white/5 shadow-inner dark:shadow-none relative flex flex-col gap-3">
-                                    {dialog.transcript?.map((line, idx) => {
-                                      const isBarista = line.speaker?.toLowerCase().includes('barista');
-                                      const isActive = idx === activePhraseIndex;
-                                      
-                                      return (
-                                        <div 
-                                          key={idx} 
-                                          onClick={() => playPhrase(dialog, line.start)} 
-                                          ref={(el) => { transcriptRefs.current[idx] = el; }}
-                                          className={`p-4 rounded-2xl cursor-pointer transition-all duration-300 border max-w-[85%] md:max-w-[75%] ${
-                                            isBarista 
-                                              ? `self-start rounded-tl-none ${
-                                                  isActive 
-                                                    ? 'bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border-l-4 border-l-emerald-500 border-y-emerald-500/10 border-r-emerald-500/10 dark:border-y-emerald-500/20 dark:border-r-emerald-500/20 shadow-[0_4px_20px_rgba(16,185,129,0.1)] text-emerald-950 dark:text-emerald-100' 
-                                                    : 'bg-white dark:bg-zinc-900/40 border-l-4 border-l-emerald-500/50 border-y-transparent border-r-transparent hover:bg-zinc-100 dark:hover:bg-zinc-900/60 border-t-transparent border-b-transparent border-r-transparent text-zinc-700 dark:text-zinc-300'
-                                                }`
-                                              : `self-end rounded-tr-none ${
-                                                  isActive 
-                                                    ? 'bg-gradient-to-r from-indigo-500/10 to-indigo-500/5 border-l-4 border-l-indigo-500 border-y-indigo-500/10 border-r-indigo-500/10 dark:border-y-indigo-500/20 dark:border-r-indigo-500/20 shadow-[0_4px_20px_rgba(99,102,241,0.1)] text-indigo-950 dark:text-indigo-100' 
-                                                    : 'bg-white dark:bg-zinc-900/40 border-l-4 border-l-indigo-500/50 border-y-transparent border-r-transparent hover:bg-zinc-100 dark:hover:bg-zinc-900/60 border-t-transparent border-b-transparent border-r-transparent text-zinc-700 dark:text-zinc-300'
-                                                }`
-                                          }`}
+                            {/* ═══ LEFT: Transcript + Play (6/12) ═══ */}
+                            <div className="lg:col-span-6 flex flex-col gap-3">
+                              <div className="bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-2xl border border-black/[0.06] dark:border-white/[0.08] overflow-hidden">
+                                <div className="h-[460px] sm:h-[520px] overflow-y-auto custom-scrollbar p-4 sm:p-5 space-y-1.5">
+                                  {dialog.transcript?.map((line, idx) => {
+                                    const isBarista = line.speaker?.toLowerCase().includes('barista');
+                                    const isActive = idx === activePhraseIndex;
+                                    
+                                    return (
+                                      <div 
+                                        key={idx} 
+                                        onClick={() => playPhrase(dialog, line.start)} 
+                                        ref={(el) => { transcriptRefs.current[idx] = el; }}
+                                        className={`flex flex-col ${isBarista ? 'items-start' : 'items-end'}`}
+                                      >
+                                        <div className={`w-full px-4 py-3 rounded-2xl cursor-pointer transition-all duration-200 ${
+                                          isBarista 
+                                            ? `rounded-bl-md ${
+                                                isActive 
+                                                  ? 'bg-[#34C759]/15 ring-2 ring-[#34C759]/30' 
+                                                  : 'bg-white dark:bg-[#1C1C1E] hover:bg-[#E8E8ED] dark:hover:bg-[#38383A]'
+                                              }`
+                                            : `rounded-br-md ${
+                                                isActive 
+                                                  ? 'bg-[#007AFF] text-white shadow-md shadow-[#007AFF]/20' 
+                                                  : 'bg-[#007AFF]/8 dark:bg-[#007AFF]/12 hover:bg-[#007AFF]/15 dark:hover:bg-[#007AFF]/20'
+                                              }`
+                                        }`}
                                         >
-                                          <span className={`text-[10px] font-bold block mb-1.5 ${isBarista ? 'text-emerald-500 dark:text-emerald-400' : 'text-indigo-500 dark:text-indigo-400'}`}>
-                                            {formatTime(line.start)} — {translateSpeaker(line.speaker)}
-                                          </span>
-                                          <p className="text-zinc-900 dark:text-white text-sm leading-relaxed">{line.text}</p>
+                                          <div className={`flex items-center gap-2 mb-1 ${isActive && !isBarista ? 'opacity-80' : ''}`}>
+                                            <span className={`text-xs font-bold ${
+                                              isActive && !isBarista ? 'text-white/70' : (isBarista ? 'text-[#34C759]' : 'text-[#007AFF]')
+                                            }`}>
+                                              {translateSpeaker(line.speaker)}
+                                            </span>
+                                            <span className={`text-[11px] font-mono ${
+                                              isActive && !isBarista ? 'text-white/50' : 'text-[#86868B]'
+                                            }`}>
+                                              {formatAbsoluteTime(line.start)}
+                                            </span>
+                                          </div>
+                                          <p className={`text-base leading-relaxed ${
+                                            isActive && !isBarista ? 'text-white' : 'text-[#1D1D1F] dark:text-[#F5F5F7]'
+                                          }`}>{line.text}</p>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <button onClick={() => playPhrase(dialog, 0)} className="self-start bg-[#007AFF] text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-[#0066CC] active:scale-95 transition-all flex items-center gap-2 shadow-sm">
+                                <PlayCircle size={16} /> Прослушать целиком
+                              </button>
+                            </div>
+
+                            {/* ═══ RIGHT: Analytics (6/12) ═══ */}
+                            <div className="lg:col-span-6 space-y-3">
+
+                              {/* QA Score Cards — 2x3 grid */}
+                              <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-4">
+                                <h4 className="text-xs font-bold text-[#86868B] uppercase tracking-wider mb-3">Оценка скрипта продаж</h4>
+                                <div className="grid grid-cols-3 gap-2">
+                                  {[ 
+                                    { key: 'cross_sales_score', label: 'Кросс-селл' },
+                                    { key: 'upsell_score', label: 'Апселл' },
+                                    { key: 'christmas_tree_score', label: 'Выбор' },
+                                    { key: 'promo_score', label: 'Акция' },
+                                    { key: 'loyalty_score', label: 'Лояльность' },
+                                    { key: 'order_duplication_score', label: 'Дубл. заказа' }
+                                  ].map((metric) => {
+                                    const details = dialog.audit_details;
+                                    const score = details ? (details[metric.key as keyof typeof details] as number) || 0 : 0;
+                                    const isDialog = details?.dialogue_type === 'dialog';
+                                    const isExcluded = isDialog || !details;
+                                    const color = isExcluded ? '#86868B' : score >= 100 ? '#34C759' : score > 0 ? '#FF9500' : '#FF3B30';
+                                    return (
+                                      <div key={metric.key} className="bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-xl p-2.5 text-center">
+                                        <span className="text-xl font-bold block" style={{ color }}>
+                                          {isExcluded ? '—' : `${Math.round(score)}%`}
+                                        </span>
+                                        <span className="text-xs font-medium text-[#86868B] block mt-0.5 leading-tight">{metric.label}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              {/* Emotions — grid cards like QA */}
+                              {dialog.audit_details?.emotion_stats && (
+                                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-4">
+                                  <div className="flex items-center justify-between mb-3">
+                                    <h4 className="text-xs font-bold text-[#86868B] uppercase tracking-wider">Анализ эмоций</h4>
+                                    {dialog.audit_details?.is_conflict && (
+                                      <span className="bg-[#FF3B30] text-white px-2 py-0.5 rounded-full text-[9px] font-bold">КОНФЛИКТ</span>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-4 gap-2">
+                                    {dialog.audit_details.emotion_stats.split(',').map((stat: string, i: number) => {
+                                      const [name, valStr] = stat.trim().split('=');
+                                      if (!name || !valStr) return null;
+                                      let val = parseFloat(valStr) * 100;
+                                      if (isNaN(val)) val = 0;
+                                      let color = '#86868B';
+                                      let label = name;
+                                      if (name.includes('angry')) { color = '#FF3B30'; label = 'Агрессия'; }
+                                      else if (name.includes('positive')) { color = '#34C759'; label = 'Позитив'; }
+                                      else if (name.includes('sad')) { color = '#007AFF'; label = 'Грусть'; }
+                                      else if (name.includes('neutral')) { color = '#86868B'; label = 'Нейтральн.'; }
+                                      return (
+                                        <div key={i} className="bg-[#F5F5F7] dark:bg-[#2C2C2E] rounded-xl p-2.5 text-center">
+                                          <span className="text-xl font-bold block" style={{ color }}>{Math.round(val)}%</span>
+                                          <span className="text-xs font-medium text-[#86868B] block mt-0.5 leading-tight">{label}</span>
                                         </div>
                                       );
                                     })}
                                   </div>
+                                </div>
+                              )}
+
+                              {/* Live service */}
+                              {dialog.audit_details && dialog.audit_details.dialogue_type !== 'dialog' && (
+                                <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl px-4 py-3">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs font-semibold text-[#FF9500] flex items-center gap-1.5">
+                                      <Star size={12} /> Живой сервис
+                                    </span>
+                                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${(dialog.audit_details.live_service_score || 0) >= 75 ? 'bg-[#FF9500] text-white' : 'bg-[#E5E5EA] dark:bg-[#38383A] text-[#86868B]'}`}>
+                                      {`${dialog.audit_details.live_service_score || 0}%`}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-[#86868B] mt-1.5 leading-relaxed">Оценка за персональное обращение, комплименты, эмпатию, запоминание предпочтений и инициативную помощь гостю.</p>
+                                </div>
+                              )}
+
+                              {/* Critical errors */}
+                              {dialog.audit_details?.critical_errors && dialog.audit_details.critical_errors !== "Не выявлено" && (
+                                <div className="flex items-start gap-2 bg-[#FF3B30]/5 border border-[#FF3B30]/10 rounded-xl px-4 py-3">
+                                  <AlertTriangle size={14} className="text-[#FF3B30] shrink-0 mt-0.5" />
+                                  <p className="text-sm text-[#1D1D1F] dark:text-[#F5F5F7] leading-relaxed">{dialog.audit_details.critical_errors}</p>
+                                </div>
+                              )}
+
+                              {/* Additional service */}
+                              {dialog.audit_details?.additional_service && !["null", "none", "не выявлено"].includes(String(dialog.audit_details.additional_service).toLowerCase()) && (
+                                <div className="flex items-start gap-2 bg-[#34C759]/5 border border-[#34C759]/10 rounded-xl px-4 py-3">
+                                  <Star size={14} className="text-[#34C759] shrink-0 mt-0.5" />
+                                  <p className="text-sm text-[#1D1D1F] dark:text-[#F5F5F7] leading-relaxed">{dialog.audit_details.additional_service}</p>
+                                </div>
+                              )}
+
+                              {/* QA Recommendation */}
+                              <div className="bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl px-4 py-3">
+                                <h4 className="text-xs font-bold text-[#86868B] uppercase tracking-wider mb-1.5">Рекомендация</h4>
+                                <p className="text-sm text-[#86868B] italic leading-relaxed">{dialog.text_analysis || "Анализ не доступен."}</p>
                               </div>
-                           </div>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1243,109 +1906,128 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
       </div>
 
+      {/* ===================== AUDIO PLAYER (floating) ===================== */}
       {activeDialog && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 animate-in slide-in-from-bottom duration-500 pb-4 md:pb-8 pointer-events-none flex justify-center">
-           <div className="w-full max-w-5xl px-4 md:px-6 pointer-events-auto">
-              <div className="bg-zinc-900/90 dark:bg-black/80 backdrop-blur-2xl border border-white/10 rounded-3xl md:rounded-full p-4 md:p-5 flex flex-col md:flex-row items-center gap-4 md:gap-8 shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
-                 
-                 {/* Left side: Dialogue info & Equalizer */}
-                 <div className="flex items-center justify-between w-full md:w-auto md:min-w-[240px] shrink-0 gap-4">
-                    <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 bg-gradient-to-tr from-emerald-500 to-indigo-600 rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/10 relative overflow-hidden group">
-                           <div className="absolute inset-0 bg-black/20" />
-                           {isPlaying ? (
-                             <div className="flex items-end gap-0.5 h-5 w-5 shrink-0 justify-center">
-                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-1" />
-                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-2" />
-                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-3" />
-                               <span className="w-0.5 bg-white rounded-full h-full animate-eq-4" />
-                             </div>
-                           ) : (
-                             <Volume2 size={20} className="text-white relative z-10" />
-                           )}
-                        </div>
-                        <div>
-                           <h4 className="font-bold text-sm tracking-tight text-white line-clamp-1">Диалог #{activeDialog?.dialog_index}</h4>
-                           <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider line-clamp-1">{shops.find(s => s.id === activeDialog?.shop_id)?.name}</p>
-                        </div>
-                    </div>
-                    {/* Mobile Close Button */}
-                    <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="md:hidden w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-white transition-colors bg-white/5 rounded-full">
-                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                    </button>
-                 </div>
-
-                 {/* Center/Main: Seek and Play Controls */}
-                 <div className="flex-1 flex flex-col md:flex-row items-center gap-4 w-full">
-                    {activeDialog.audio_url ? (
-                       <>
-                          {/* Play/Pause controls */}
-                          <div className="flex items-center gap-4 shrink-0 justify-center">
-                             <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.max(0, currentTime - 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-zinc-400 hover:text-white transition-colors p-1" title="-10 сек">
-                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg>
-                             </button>
-                             <button onClick={togglePlay} className="w-11 h-11 bg-white hover:bg-zinc-200 text-black rounded-full flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition-all">
-                                {isPlaying ? <PauseCircle size={22} className="text-black" /> : <PlayCircle size={24} className="ml-0.5 text-black" />}
-                             </button>
-                             <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.min(duration, currentTime + 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-zinc-400 hover:text-white transition-colors p-1" title="+10 сек">
-                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
-                             </button>
-                          </div>
-
-                          {/* Progress Bar interactive with glow styling */}
-                          <div className="flex-1 flex items-center gap-3 w-full">
-                             <span className="text-[10px] font-bold text-zinc-400 min-w-[35px] font-mono text-right">{formatTime(currentTime)}</span>
-                             <div className="flex-1 relative h-2 bg-white/10 rounded-full overflow-hidden flex items-center group">
-                                <div className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-emerald-500 via-emerald-400 to-indigo-500 pointer-events-none transition-all duration-75 group-hover:from-emerald-400 group-hover:to-indigo-400 shadow-[0_0_8px_rgba(16,185,129,0.5)]" style={{ width: `${duration && !isNaN(duration) && !isNaN(currentTime) ? (currentTime / duration) * 100 : 0}%` }} />
-                                <input 
-                                   type="range" 
-                                   min="0" 
-                                   max={duration && !isNaN(duration) ? duration : 100} 
-                                   value={isNaN(currentTime) ? 0 : currentTime} 
-                                   onChange={(e) => { 
-                                     const time = Number(e.target.value); 
-                                     if (audioRef.current) audioRef.current.currentTime = time; 
-                                     setCurrentTime(time); 
-                                   }} 
-                                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer pointer-events-auto" 
-                                />
-                             </div>
-                             <span className="text-[10px] font-bold text-zinc-400 min-w-[35px] font-mono">{formatTime(duration)}</span>
-                          </div>
-                       </>
+        <div className="fixed bottom-16 md:bottom-0 left-0 right-0 z-50 pb-2 md:pb-6 pointer-events-none flex justify-center md:ml-64">
+          <div className="w-full max-w-4xl px-4 pointer-events-auto">
+            <div className="bg-white/90 dark:bg-[#1C1C1E]/90 backdrop-blur-2xl border border-black/[0.06] dark:border-white/[0.08] rounded-2xl md:rounded-full p-4 md:p-4 flex flex-col md:flex-row items-center gap-4 md:gap-6 shadow-xl">
+              
+              {/* Left: dialog info */}
+              <div className="flex items-center justify-between w-full md:w-auto md:min-w-[200px] shrink-0 gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-tr from-[#007AFF] to-[#5856D6] rounded-xl flex items-center justify-center shrink-0 shadow-sm relative overflow-hidden">
+                    {isPlaying ? (
+                      <div className="flex items-end gap-0.5 h-4 w-4 shrink-0 justify-center">
+                        <span className="w-0.5 bg-white rounded-full h-full animate-eq-1" />
+                        <span className="w-0.5 bg-white rounded-full h-full animate-eq-2" />
+                        <span className="w-0.5 bg-white rounded-full h-full animate-eq-3" />
+                        <span className="w-0.5 bg-white rounded-full h-full animate-eq-4" />
+                      </div>
                     ) : (
-                       <div className="w-full flex flex-col items-center justify-center text-center py-2 border border-dashed border-white/10 rounded-2xl bg-white/[0.02]">
-                          <span className="text-xs font-bold text-zinc-300">Аудиофайл не загружен на сервер</span>
-                          <span className="text-[9px] text-zinc-500 uppercase tracking-widest mt-1">OGG скрыт оркестратором</span>
-                       </div>
+                      <Volume2 size={18} className="text-white" />
                     )}
-                 </div>
-
-                 {/* Right: Desktop Close Button */}
-                 <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="hidden md:flex w-10 h-10 items-center justify-center text-zinc-400 hover:text-white hover:bg-white/5 transition-colors rounded-full shrink-0">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                 </button>
-                 
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="font-semibold text-sm text-[#1D1D1F] dark:text-[#F5F5F7] truncate">Диалог #{activeDialog?.dialog_index}</h4>
+                    <p className="text-xs text-[#86868B] truncate">{shops.find(s => s.id === activeDialog?.shop_id)?.name}</p>
+                  </div>
+                </div>
+                <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="md:hidden w-8 h-8 flex items-center justify-center text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white transition-colors rounded-full hover:bg-black/5 dark:hover:bg-white/5">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
               </div>
-           </div>
-           <audio 
-             ref={audioRef} 
-             src={activeDialog.audio_url} 
-             onTimeUpdate={handleTimeUpdate} 
-             onLoadedMetadata={handleLoadedMetadata} 
-             onPlay={() => setIsPlaying(true)} 
-             onPause={() => setIsPlaying(false)} 
-             onEnded={() => setIsPlaying(false)} 
-           />
+
+              {/* Center: controls + seek */}
+              <div className="flex-1 flex flex-col md:flex-row items-center gap-3 w-full">
+                {activeDialog.audio_url ? (
+                  <>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.max(0, currentTime - 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white transition-colors p-1" title="-10 сек">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg>
+                      </button>
+                      <button onClick={togglePlay} className="w-10 h-10 bg-[#007AFF] hover:bg-[#0066CC] text-white rounded-full flex items-center justify-center shadow-sm hover:scale-105 active:scale-95 transition-all">
+                        {isPlaying ? <PauseCircle size={20} className="text-white" /> : <PlayCircle size={22} className="ml-0.5 text-white" />}
+                      </button>
+                      <button onClick={() => { if(audioRef.current) { audioRef.current.currentTime = Math.min(duration, currentTime + 10); setCurrentTime(audioRef.current.currentTime); } }} className="text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white transition-colors p-1" title="+10 сек">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
+                      </button>
+                    </div>
+                    <div className="flex-1 flex items-center gap-2.5 w-full">
+                      <span className="text-[10px] font-medium text-[#86868B] min-w-[32px] font-mono text-right">{formatTime(currentTime)}</span>
+                      <div className="flex-1 relative h-1.5 bg-[#E5E5EA] dark:bg-[#38383A] rounded-full overflow-hidden flex items-center">
+                        <div className="absolute left-0 top-0 bottom-0 bg-[#007AFF] pointer-events-none transition-all duration-75 rounded-full" style={{ width: `${duration && !isNaN(duration) && !isNaN(currentTime) ? (currentTime / duration) * 100 : 0}%` }} />
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max={duration && !isNaN(duration) ? duration : 100} 
+                          value={isNaN(currentTime) ? 0 : currentTime} 
+                          onChange={(e) => { 
+                            const time = Number(e.target.value); 
+                            if (audioRef.current) audioRef.current.currentTime = time; 
+                            setCurrentTime(time); 
+                          }} 
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer pointer-events-auto" 
+                        />
+                      </div>
+                      <span className="text-[10px] font-medium text-[#86868B] min-w-[32px] font-mono">{formatTime(duration)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-full flex items-center justify-center py-2">
+                    <span className="text-xs text-[#86868B]">Аудиофайл не загружен</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop close */}
+              <button onClick={() => { setActiveDialog(null); setIsPlaying(false); }} className="hidden md:flex w-8 h-8 items-center justify-center text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 transition-colors rounded-full shrink-0">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </button>
+            </div>
+          </div>
+          <audio 
+            ref={audioRef} 
+            src={activeDialog.audio_url} 
+            crossOrigin="anonymous"
+            preload="auto"
+            onTimeUpdate={handleTimeUpdate} 
+            onLoadedMetadata={handleLoadedMetadata} 
+            onPlay={() => setIsPlaying(true)} 
+            onPause={() => setIsPlaying(false)} 
+            onEnded={() => setIsPlaying(false)} 
+            onError={(e) => {
+              const audio = e.currentTarget;
+              const err = audio.error;
+              console.error("Audio error:", err?.code, err?.message, "src:", audio.src);
+            }}
+          />
         </div>
       )}
 
       <style jsx global>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .date-slider-container {
+          --card-width: calc((100% - 1rem) / 3);
+        }
+        @media (min-width: 640px) {
+          .date-slider-container {
+            --card-width: calc((100% - 2rem) / 4.5);
+          }
+        }
+        @media (min-width: 768px) {
+          .date-slider-container {
+            --card-width: calc((100% - 3rem) / 6.5);
+          }
+        }
+        .safe-area-bottom {
+          padding-bottom: env(safe-area-inset-bottom, 0px);
+        }
       `}</style>
     </main>
   );

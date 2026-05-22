@@ -25,8 +25,8 @@ import { Viewport } from 'next';
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#fafafa' },
-    { media: '(prefers-color-scheme: dark)', color: '#050505' },
+    { media: '(prefers-color-scheme: light)', color: '#F5F5F7' },
+    { media: '(prefers-color-scheme: dark)', color: '#000000' },
   ],
   width: 'device-width',
   initialScale: 1,
@@ -47,7 +47,7 @@ export default function RootLayout({
       className={`${inter.variable} font-sans h-full antialiased`}
       suppressHydrationWarning
     >
-      <body className="min-h-full bg-zinc-50 dark:bg-[#050505] text-zinc-900 dark:text-white selection:bg-black/10 dark:selection:bg-white/20 transition-colors duration-300">
+      <body className="min-h-full bg-[#F5F5F7] dark:bg-black text-[#1D1D1F] dark:text-[#F5F5F7] selection:bg-[#007AFF]/10 dark:selection:bg-[#007AFF]/20 transition-colors duration-300">
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
           {children}
         </ThemeProvider>

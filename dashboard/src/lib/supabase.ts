@@ -58,5 +58,6 @@ export type AgentTelemetry = {
   status: string;
   active_task?: string;
   created_at?: string;
+  updated_at?: string;
 };
 
