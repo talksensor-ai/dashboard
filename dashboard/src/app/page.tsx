@@ -257,10 +257,18 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (activePhraseIndex !== null && transcriptRefs.current[activePhraseIndex]) {
-      transcriptRefs.current[activePhraseIndex]?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
+      const el = transcriptRefs.current[activePhraseIndex];
+      if (el) {
+        const container = el.closest('.custom-scrollbar');
+        if (container) {
+          const c = container as HTMLElement;
+          const relativeTop = el.getBoundingClientRect().top - container.getBoundingClientRect().top + c.scrollTop;
+          c.scrollTo({
+            top: relativeTop - c.clientHeight / 2 + el.clientHeight / 2,
+            behavior: "smooth"
+          });
+        }
+      }
     }
   }, [activePhraseIndex]);
 
