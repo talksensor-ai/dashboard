@@ -1762,7 +1762,7 @@ export default function Dashboard() {
                                 <div className="h-[460px] sm:h-[520px] overflow-y-auto custom-scrollbar p-4 sm:p-5 space-y-1.5">
                                   {dialog.transcript?.map((line, idx) => {
                                     const isBarista = line.speaker?.toLowerCase().includes('barista');
-                                    const isActive = idx === activePhraseIndex;
+                                    const isActive = idx === activePhraseIndex && activeDialog?.id === dialog.id;
                                     
                                     return (
                                       <div 
