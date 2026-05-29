@@ -94,7 +94,7 @@ export default function Dashboard() {
 
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const transcriptRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const transcriptRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // Drag-to-scroll handlers
   const handleDateScrollMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -255,9 +255,15 @@ export default function Dashboard() {
     }
   };
 
+  // Reset phrase index when changing active dialog
   useEffect(() => {
-    if (activePhraseIndex !== null && transcriptRefs.current[activePhraseIndex]) {
-      const el = transcriptRefs.current[activePhraseIndex];
+    setActivePhraseIndex(null);
+  }, [activeDialog?.id]);
+
+  // Handle active phrase auto-scroll
+  useEffect(() => {
+    if (activeDialog && activePhraseIndex !== null && transcriptRefs.current[`${activeDialog.id}-${activePhraseIndex}`]) {
+      const el = transcriptRefs.current[`${activeDialog.id}-${activePhraseIndex}`];
       if (el) {
         const container = el.closest('.custom-scrollbar');
         if (container) {
@@ -270,7 +276,7 @@ export default function Dashboard() {
         }
       }
     }
-  }, [activePhraseIndex]);
+  }, [activeDialog, activePhraseIndex]);
 
   const formatAbsoluteTime = (time: number) => {
     if (typeof time !== 'number' || isNaN(time) || !isFinite(time)) return "00:00:00";
@@ -328,7 +334,7 @@ export default function Dashboard() {
       if (statusErr && statusErr.code !== 'PGRST116') console.error("status error:", statusErr);
       
       const { data: telemetryData, error: telemetryErr } = await supabase.from("agent_telemetry").select("*").order("id");
-      if (telemetryErr) console.error("telemetry error:", telemetryErr);
+      if (telemetryErr) console.error("dialogs error:", telemetryErr);
       
       if (shopsData) setShops(shopsData);
       if (allMonthDialogs) setAllDialogs(allMonthDialogs);
@@ -1762,7 +1768,7 @@ export default function Dashboard() {
                                       <div 
                                         key={idx} 
                                         onClick={() => playPhrase(dialog, line.start)} 
-                                        ref={(el) => { transcriptRefs.current[idx] = el; }}
+                                        ref={(el) => { transcriptRefs.current[`${dialog.id}-${idx}`] = el; }}
                                         className={`flex flex-col ${isBarista ? 'items-start' : 'items-end'}`}
                                       >
                                         <div className={`w-full px-4 py-3 rounded-2xl cursor-pointer transition-all duration-200 ${
