@@ -94,7 +94,7 @@ export default function Dashboard() {
 
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const transcriptRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const transcriptRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Drag-to-scroll handlers
   const handleDateScrollMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -167,8 +167,7 @@ export default function Dashboard() {
       
       const dur = audioRef.current.duration;
       const startOffset = activeDialog.transcript.length > 0 ? activeDialog.transcript[0].start : 0;
-      const isUrlCropped = activeDialog?.audio_url?.includes('dialog_') || activeDialog?.audio_url?.includes('slice_') || activeDialog?.audio_url?.includes('_patched');
-      const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
+      const isCropped = startOffset > 3600 || (dur && !isNaN(dur) && dur < startOffset);
       const absoluteTime = isCropped ? time + startOffset : time;
 
       let index = -1;
@@ -193,8 +192,7 @@ export default function Dashboard() {
         if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current);
         
         const startOffset = activeDialog.transcript && activeDialog.transcript.length > 0 ? activeDialog.transcript[0].start : 0;
-        const isUrlCropped = activeDialog?.audio_url?.includes('dialog_') || activeDialog?.audio_url?.includes('slice_') || activeDialog?.audio_url?.includes('_patched');
-        const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
+        const isCropped = startOffset > 3600 || (dur && !isNaN(dur) && dur < startOffset);
         const seekTime = isCropped ? (pendingStartTimeRef.current >= startOffset ? pendingStartTimeRef.current - startOffset : pendingStartTimeRef.current) : pendingStartTimeRef.current;
 
         audioRef.current.currentTime = seekTime;
@@ -225,8 +223,7 @@ export default function Dashboard() {
         playTimeoutRef.current = setTimeout(() => {
           if (audioRef.current && dialog.audio_url && pendingStartTimeRef.current !== null) {
             const dur = audioRef.current.duration;
-            const isUrlCropped = dialog?.audio_url?.includes('dialog_') || dialog?.audio_url?.includes('slice_') || dialog?.audio_url?.includes('_patched');
-            const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
+            const isCropped = startOffset > 3600 || (dur && !isNaN(dur) && dur < startOffset);
             const seekTime = isCropped ? (pendingStartTimeRef.current >= startOffset ? pendingStartTimeRef.current - startOffset : pendingStartTimeRef.current) : pendingStartTimeRef.current;
 
             audioRef.current.currentTime = seekTime;
@@ -242,8 +239,7 @@ export default function Dashboard() {
       } else if (audioRef.current && dialog.audio_url) {
         pendingStartTimeRef.current = null;
         const dur = audioRef.current.duration;
-        const isUrlCropped = dialog?.audio_url?.includes('dialog_') || dialog?.audio_url?.includes('slice_') || dialog?.audio_url?.includes('_patched');
-        const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
+        const isCropped = startOffset > 3600 || (dur && !isNaN(dur) && dur < startOffset);
         const seekTime = isCropped ? (startTime >= startOffset ? startTime - startOffset : startTime) : startTime;
 
         audioRef.current.currentTime = seekTime;
@@ -259,15 +255,9 @@ export default function Dashboard() {
     }
   };
 
-  // Reset phrase index when changing active dialog
   useEffect(() => {
-    setActivePhraseIndex(null);
-  }, [activeDialog?.id]);
-
-  // Handle active phrase auto-scroll
-  useEffect(() => {
-    if (activeDialog && activePhraseIndex !== null && transcriptRefs.current[`${activeDialog.id}-${activePhraseIndex}`]) {
-      const el = transcriptRefs.current[`${activeDialog.id}-${activePhraseIndex}`];
+    if (activePhraseIndex !== null && transcriptRefs.current[activePhraseIndex]) {
+      const el = transcriptRefs.current[activePhraseIndex];
       if (el) {
         const container = el.closest('.custom-scrollbar');
         if (container) {
@@ -280,11 +270,11 @@ export default function Dashboard() {
         }
       }
     }
-  }, [activeDialog, activePhraseIndex]);
+  }, [activePhraseIndex]);
 
   const formatAbsoluteTime = (time: number) => {
     if (typeof time !== 'number' || isNaN(time) || !isFinite(time)) return "00:00:00";
-    const absoluteSeconds = time + 28800;
+    const absoluteSeconds = time;
     const hours = Math.floor(absoluteSeconds / 3600);
     const mins = Math.floor((absoluteSeconds % 3600) / 60);
     const secs = Math.floor(absoluteSeconds % 60);
@@ -338,7 +328,7 @@ export default function Dashboard() {
       if (statusErr && statusErr.code !== 'PGRST116') console.error("status error:", statusErr);
       
       const { data: telemetryData, error: telemetryErr } = await supabase.from("agent_telemetry").select("*").order("id");
-      if (telemetryErr) console.error("dialogs error:", telemetryErr);
+      if (telemetryErr) console.error("telemetry error:", telemetryErr);
       
       if (shopsData) setShops(shopsData);
       if (allMonthDialogs) setAllDialogs(allMonthDialogs);
@@ -1766,13 +1756,13 @@ export default function Dashboard() {
                                 <div className="h-[460px] sm:h-[520px] overflow-y-auto custom-scrollbar p-4 sm:p-5 space-y-1.5">
                                   {dialog.transcript?.map((line, idx) => {
                                     const isBarista = line.speaker?.toLowerCase().includes('barista');
-                                    const isActive = idx === activePhraseIndex && activeDialog?.id === dialog.id;
+                                    const isActive = idx === activePhraseIndex;
                                     
                                     return (
                                       <div 
                                         key={idx} 
                                         onClick={() => playPhrase(dialog, line.start)} 
-                                        ref={(el) => { transcriptRefs.current[`${dialog.id}-${idx}`] = el; }}
+                                        ref={(el) => { transcriptRefs.current[idx] = el; }}
                                         className={`flex flex-col ${isBarista ? 'items-start' : 'items-end'}`}
                                       >
                                         <div className={`w-full px-4 py-3 rounded-2xl cursor-pointer transition-all duration-200 ${
