@@ -167,7 +167,8 @@ export default function Dashboard() {
       
       const dur = audioRef.current.duration;
       const startOffset = activeDialog.transcript.length > 0 ? activeDialog.transcript[0].start : 0;
-      const isCropped = dur && !isNaN(dur) && dur < startOffset;
+      const isUrlCropped = activeDialog?.audio_url?.includes('dialog_') || activeDialog?.audio_url?.includes('slice_') || activeDialog?.audio_url?.includes('_patched');
+      const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
       const absoluteTime = isCropped ? time + startOffset : time;
 
       let index = -1;
@@ -192,7 +193,8 @@ export default function Dashboard() {
         if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current);
         
         const startOffset = activeDialog.transcript && activeDialog.transcript.length > 0 ? activeDialog.transcript[0].start : 0;
-        const isCropped = dur && !isNaN(dur) && dur < startOffset;
+        const isUrlCropped = activeDialog?.audio_url?.includes('dialog_') || activeDialog?.audio_url?.includes('slice_') || activeDialog?.audio_url?.includes('_patched');
+        const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
         const seekTime = isCropped ? (pendingStartTimeRef.current >= startOffset ? pendingStartTimeRef.current - startOffset : pendingStartTimeRef.current) : pendingStartTimeRef.current;
 
         audioRef.current.currentTime = seekTime;
@@ -223,7 +225,8 @@ export default function Dashboard() {
         playTimeoutRef.current = setTimeout(() => {
           if (audioRef.current && dialog.audio_url && pendingStartTimeRef.current !== null) {
             const dur = audioRef.current.duration;
-            const isCropped = dur && !isNaN(dur) && dur < startOffset;
+            const isUrlCropped = activeDialog?.audio_url?.includes('dialog_') || activeDialog?.audio_url?.includes('slice_') || activeDialog?.audio_url?.includes('_patched');
+            const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
             const seekTime = isCropped ? (pendingStartTimeRef.current >= startOffset ? pendingStartTimeRef.current - startOffset : pendingStartTimeRef.current) : pendingStartTimeRef.current;
 
             audioRef.current.currentTime = seekTime;
@@ -239,7 +242,8 @@ export default function Dashboard() {
       } else if (audioRef.current && dialog.audio_url) {
         pendingStartTimeRef.current = null;
         const dur = audioRef.current.duration;
-        const isCropped = dur && !isNaN(dur) && dur < startOffset;
+        const isUrlCropped = dialog?.audio_url?.includes('dialog_') || dialog?.audio_url?.includes('slice_') || dialog?.audio_url?.includes('_patched');
+        const isCropped = isUrlCropped || (dur && !isNaN(dur) && dur < startOffset);
         const seekTime = isCropped ? (startTime >= startOffset ? startTime - startOffset : startTime) : startTime;
 
         audioRef.current.currentTime = seekTime;
