@@ -1582,7 +1582,7 @@ export default function Dashboard() {
                     className={`w-full overflow-x-auto custom-scrollbar touch-pan-x date-slider-container ${isDragging ? 'cursor-grabbing select-none' : 'cursor-grab snap-x snap-mandatory'}`}
                   >
                     <div className="flex gap-2 py-1 select-none">
-                      {Array.from({length: 30}).map((_, i) => {
+                      {Array.from({length: 50}).map((_, i) => {
                         const d = new Date();
                         d.setDate(d.getDate() - i);
                         const dateStr = getLocalDateStr(d);
