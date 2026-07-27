@@ -320,7 +320,7 @@ export default function Dashboard() {
       if (shopsErr) console.error("shops error:", shopsErr);
       
       const monthAgo = new Date();
-      monthAgo.setDate(monthAgo.getDate() - 30);
+      monthAgo.setDate(monthAgo.getDate() - 50);
       const { data: allMonthDialogs, error: dialogsErr } = await supabase.from("dialogs").select("*").gte("created_at", monthAgo.toISOString()).order("created_at", { ascending: false });
       if (dialogsErr) console.error("dialogs error:", dialogsErr);
 
