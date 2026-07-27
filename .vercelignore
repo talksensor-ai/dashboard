@@ -1,0 +1,14 @@
+.venv312/
+archive/
+darwin-ui/
+mcp_server/
+pipeline/
+scratch/
+*.wav
+*.mp3
+*.txt
+*.py
+*.bat
+*.sql
+node_modules/
+.next/

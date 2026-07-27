@@ -95,18 +95,63 @@ def push_report_to_supabase(json_path: str, shop_id: int = 1, audio_path: str = 
     for idx, dialog in enumerate(dialogues):
         qa = dialog.get("qa_evaluation", {})
         
-        # Считаем средний балл (от 0 до 100)
-        scores = [
-            qa.get("cross_sales_score", 0),
-            qa.get("upsell_score", 0),
-            qa.get("christmas_tree_score", 0),
-            qa.get("promo_score", 0),
-            qa.get("loyalty_score", 0),
-            qa.get("order_duplication_score", 0)
+        # Считаем средний балл с учетом ВЕСА каждого критерия
+        weights = {
+            "cross_sales_score": 10,
+            "upsell_score": 10,
+            "loyalty_score": 8,
+            "promo_score": 6,
+            "christmas_tree_score": 6,
+            "live_service_score": 5,
+            "emotion_score": 5,
+            "order_duplication_score": 3
+        }
+        
+        valid_scores_dict = {}
+        metrics = [
+            "cross_sales_score", 
+            "upsell_score", 
+            "christmas_tree_score", 
+            "promo_score", 
+            "loyalty_score", 
+            "order_duplication_score",
+            "live_service_score"
         ]
         
+        for key in metrics:
+            val = qa.get(key)
+            if val is not None:
+                valid_scores_dict[key] = val
+                
+        # Парсинг эмоций и расчет emotion_score
+        emotion_str = qa.get("emotion_stats", "")
+        if emotion_str:
+            import re
+            pos_match = re.search(r'positive=([\d.]+)', emotion_str)
+            neu_match = re.search(r'neutral=([\d.]+)', emotion_str)
+            
+            if pos_match and neu_match:
+                try:
+                    pos_val = float(pos_match.group(1))
+                    neu_val = float(neu_match.group(1))
+                    emotion_score = (pos_val * 100.0) + (neu_val * 50.0)
+                    valid_scores_dict["emotion_score"] = round(emotion_score, 1)
+                except ValueError:
+                    pass
+        
+        # Взвешенный расчет
+        total_weight = 0
+        total_weighted_score = 0
+        for key, val in valid_scores_dict.items():
+            w = weights.get(key, 1)
+            total_weight += w
+            total_weighted_score += (val * w)
+            
         # Если конфликт, то оценка 0
-        avg_score = sum(scores) / 6.0 if not qa.get("is_conflict", False) else 0
+        if qa.get("is_conflict", False):
+            avg_score = 0
+        else:
+            avg_score = total_weighted_score / total_weight if total_weight > 0 else 0
 
         # Преобразуем формат transcript
         raw_transcript = dialog.get("transcript", [])
@@ -142,6 +187,23 @@ def push_report_to_supabase(json_path: str, shop_id: int = 1, audio_path: str = 
             logging.info(f"Диалог #{idx+1} пропущен (обнаружен дубликат).")
             continue
 
+        # --- Расчет потенциально упущенной выручки (Оборот) ---
+        lost_revenue_rub = 0.0
+        if dialog.get("dialogue_type", "standard") == "standard":
+            # 1. Упущенный Апселл и Кросс-селл (в среднем 400 руб. чек допродажи * 10% конверсия)
+            if qa.get("upsell_score", 0) == 0 and qa.get("cross_sales_score", 0) == 0:
+                lost_revenue_rub += 400 * 0.10
+                
+            # 2. Лояльность (3000 руб. дополнительной выручки от частоты визитов * 50% конверсия регистрации)
+            if qa.get("loyalty_score", 0) == 0:
+                lost_revenue_rub += 3000 * 0.50
+                
+            # 3. Конфликты и сухой сервис (7500 руб. LTV * % оттока)
+            if qa.get("is_conflict", False):
+                lost_revenue_rub += 7500 * 0.50
+            elif qa.get("live_service_score", 0) == 0:
+                lost_revenue_rub += 7500 * 0.10
+
         safe_file_name = file_name if 'file_name' in locals() else f"dialog_{idx+1}.ogg"
 
         row = {
@@ -154,6 +216,7 @@ def push_report_to_supabase(json_path: str, shop_id: int = 1, audio_path: str = 
             "score": round(avg_score / 20.0, 1), # Scale 0-100 to 0-5 to satisfy DB constraints
             "text_analysis": qa.get("recommendation", ""),
             "audio_url": public_audio_url,
+            "lost_revenue_rub": round(lost_revenue_rub, 2),
             "audit_details": {
                 "dialogue_type": dialog.get("dialogue_type", "standard"),
                 "cross_sales_score": qa.get("cross_sales_score") or 0,
