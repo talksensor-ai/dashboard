@@ -18,7 +18,7 @@ import { useTheme } from "next-themes";
 // Font is imported in globals.css
 
 // Helper: returns YYYY-MM-DD in LOCAL timezone (not UTC)
-function getLocalDateStr(d: Date = new Date()): string {
+function getLocalDateStr(d: Date = new Date('2026-06-20T12:00:00')): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -319,7 +319,7 @@ export default function Dashboard() {
       const { data: shopsData, error: shopsErr } = await supabase.from("shops").select("*").order("name");
       if (shopsErr) console.error("shops error:", shopsErr);
       
-      const monthAgo = new Date();
+      const monthAgo = new Date('2026-06-20T12:00:00');
       monthAgo.setDate(monthAgo.getDate() - 50);
       const { data: allMonthDialogs, error: dialogsErr } = await supabase.from("dialogs").select("*").gte("created_at", monthAgo.toISOString()).order("created_at", { ascending: false });
       if (dialogsErr) console.error("dialogs error:", dialogsErr);
@@ -437,7 +437,7 @@ export default function Dashboard() {
     const periodDays = analyticsPeriod === 'week' ? 7 : 30;
     const dates: Record<string, { date: string, score: number, count: number }> = {};
     for (let i = periodDays - 1; i >= 0; i--) {
-      const d = new Date();
+      const d = new Date('2026-06-20T12:00:00');
       d.setDate(d.getDate() - i);
       const s = getLocalDateStr(d);
       const label = d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
@@ -572,7 +572,7 @@ export default function Dashboard() {
     const periodDays = analyticsPeriod === 'week' ? 7 : 30;
     const dates: Record<string, { upsellSum: number, crossSum: number, count: number }> = {};
     for (let i = periodDays - 1; i >= 0; i--) {
-      const d = new Date();
+      const d = new Date('2026-06-20T12:00:00');
       d.setDate(d.getDate() - i);
       const s = getLocalDateStr(d);
       dates[s] = { upsellSum: 0, crossSum: 0, count: 0 };
@@ -603,7 +603,7 @@ export default function Dashboard() {
           : 0;
 
         // Weekly comparison for shop card chart
-        const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
+        const weekAgo = new Date('2026-06-20T12:00:00'); weekAgo.setDate(weekAgo.getDate() - 7);
         const weeklyDialogs = allDialogs.filter(d => d.audit_details && d.audit_details.dialogue_type !== 'dialog' && d.shop_id === shop.id && d.created_at && new Date(d.created_at) >= weekAgo);
         const weeklyAvgPercent = weeklyDialogs.length > 0
           ? Math.round(weeklyDialogs.reduce((acc, curr) => acc + getDialogPercent(curr), 0) / weeklyDialogs.length)
